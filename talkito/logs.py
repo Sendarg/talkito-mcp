@@ -79,6 +79,7 @@ def setup_logging(log_file_path: Optional[str] = None, mode: str = 'w') -> None:
     logging.getLogger('uvicorn.access').setLevel(logging.WARNING)
     logging.getLogger('fastmcp').setLevel(logging.WARNING)
     logging.getLogger('mcp').setLevel(logging.WARNING)
+    logging.getLogger('docket').setLevel(logging.WARNING)
     logging.getLogger('starlette').setLevel(logging.WARNING)
     logging.getLogger('anyio').setLevel(logging.WARNING)
     
@@ -137,6 +138,54 @@ def restore_stderr() -> None:
 def get_logger(name: str) -> logging.Logger:
     """Get a logger for the specified module name."""
     return logging.getLogger(name)
+
+def ensure_logging_handlers() -> None:
+    """Ensure logging handlers are present and VALID (restores them if Uvicorn stripped/closed them)."""
+    global _log_enabled, _log_file, _is_configured
+    
+    if not _log_enabled or not _log_file:
+        return
+        
+    root_logger = logging.getLogger()
+    
+    # Remove any existing FileHandlers for our log file (they might be stale/closed)
+    handlers_to_remove = []
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.FileHandler) and str(_log_file) in str(handler.baseFilename):
+            handlers_to_remove.append(handler)
+            
+    for handler in handlers_to_remove:
+        handler.close()
+        root_logger.removeHandler(handler)
+            
+    # Always create a fresh FileHandler to ensure valid file descriptor
+    try:
+        file_handler = logging.FileHandler(str(_log_file), mode='a')
+        file_handler.setLevel(logging.INFO)
+        
+        class MillisecondFormatter(logging.Formatter):
+            def formatTime(self, record, datefmt=None):
+                from datetime import datetime
+                ct = datetime.fromtimestamp(record.created)
+                if datefmt:
+                    s = ct.strftime(datefmt)[:-3]
+                else:
+                    s = ct.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                return s
+        
+        formatter = MillisecondFormatter('[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S.%f')
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+        root_logger.setLevel(logging.INFO)
+        
+        # Re-apply suppressions
+        logging.getLogger('mcp').setLevel(logging.WARNING)
+        logging.getLogger('fastmcp').setLevel(logging.WARNING)
+        logging.getLogger('docket').setLevel(logging.WARNING)
+        
+    except Exception as e:
+        import sys
+        print(f"Failed to restore logging handlers: {e}", file=sys.stderr)
 
 def log_message(level: str, message: str, logger_name: Optional[str] = None) -> None:
     """Log a message with custom level handling (supports BUFFER and FILTER levels)."""

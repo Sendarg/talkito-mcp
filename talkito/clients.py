@@ -290,9 +290,36 @@ async def run_terminal_agent_extensions(args) -> int:
 
     log_message("DEBUG", "run_terminal_agent_extensions")
 
+    # # PROACTIVE FIX: Ensure we don't proxy localhost calls to avoid 502 errors
+    # # This is critical for tools like codex/claude connecting to our local MCP server
+    # import os
+    # no_proxy = os.environ.get("no_proxy", "")
+    # NO_PROXY = os.environ.get("NO_PROXY", "")
+    
+    # # Add localhost IPs if not present
+    # additions = []
+    # for addr in ["127.0.0.1", "localhost"]:
+    #     if addr not in no_proxy and addr not in NO_PROXY:
+    #         additions.append(addr)
+            
+    # if additions:
+    #     new_entries = ",".join(additions)
+    #     if no_proxy:
+    #         os.environ["no_proxy"] = f"{no_proxy},{new_entries}"
+    #     else:
+    #         os.environ["no_proxy"] = new_entries
+            
+    #     if NO_PROXY:
+    #         os.environ["NO_PROXY"] = f"{NO_PROXY},{new_entries}"
+    #     else:
+    #         os.environ["NO_PROXY"] = new_entries
+            
+    #     log_message("INFO", f"Updated NO_PROXY to include localhost: {os.environ.get('NO_PROXY')}")
+
+
     # Determine if we should enable MCP server
     # Use getattr with default False to avoid AttributeError in test/utility code
-    mcp_enabled = not getattr(args, "disable_mcp", False)
+    mcp_enabled = getattr(args, "enable_mcp", False)
     port = None
 
     # Find available port only if MCP is enabled
@@ -488,8 +515,10 @@ async def run_terminal_agent_extensions(args) -> int:
         # Set initial webhook_port for args (will be updated by background thread)
         args.webhook_port = webhook_port
 
-        if args.command == 'claude':
-            args = run_api_server(args)
+        # may be for mcp server, but I use them independently. the MCP server have a api_server 8001 already for mcp.
+        # only claude need a api_server for PreToolUse hook….
+        # if args.command == 'claude':
+        #     args = run_api_server(args)
 
         # Start the MCP server thread
         if mcp_enabled:
@@ -593,7 +622,9 @@ def run_api_server(args):
             print("Warning: API server failed to start", file=sys.stderr)
             actual_webhook_port = None
 
-        # Update Claude hooks to use the API server
+        # NOTE: Disabled Claude hooks - they were causing significant delays (1-2+ minutes)
+        # The hooks are used for tracking tool use state but are not critical
+        # If you need to re-enable them, uncomment the following lines:
         if actual_webhook_port:
             try:
                 update_claude_hooks(actual_webhook_port)

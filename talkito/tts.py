@@ -126,8 +126,8 @@ class SpeechItem:
             self.timestamp = datetime.now()
 
 # Configuration constants
-MIN_SPEAK_LENGTH = 4  # Minimum characters before speaking
-MAX_SPEAK_LENGTH = 400
+MIN_SPEAK_LENGTH = 3  # Minimum characters before speaking
+MAX_SPEAK_LENGTH = 300
 CACHE_SIZE = 10000  # Cache size for similarity checking
 SIMILARITY_THRESHOLD = 0.85  # How similar text must be to be considered a repeat
 DEBOUNCE_TIME = 0.5  # Seconds to wait before speaking rapidly changing text
@@ -190,8 +190,8 @@ azure_voice = os.environ.get('AZURE_VOICE', 'en-US-AriaNeural')  # Default Azure
 azure_region = os.environ.get('AZURE_REGION', 'eastus')  # Default Azure region
 gcloud_voice = os.environ.get('GCLOUD_VOICE', 'en-US-Journey-F')  # Default Google Cloud voice
 gcloud_language_code = os.environ.get('GCLOUD_LANGUAGE_CODE', 'en-US')  # Default Google Cloud language code
-elevenlabs_voice_id = os.environ.get('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')  # Default ElevenLabs voice (Rachel)
-elevenlabs_model_id = os.environ.get('ELEVENLABS_MODEL_ID', 'eleven_monolingual_v1')  # Default ElevenLabs model
+elevenlabs_voice_id = os.environ.get('ELEVENLABS_VOICE_ID', '5l5f8iK3YPeGga21rQIX')  # Default ElevenLabs voice (Rachel)
+elevenlabs_model_id = os.environ.get('ELEVENLABS_MODEL_ID', 'eleven_v3')  # Default ElevenLabs model
 deepgram_voice_model = os.environ.get('DEEPGRAM_VOICE_MODEL', 'aura-asteria-en')  # Default Deepgram model
 kittentts_model = os.environ.get('KITTENTTS_MODEL', 'kitten-tts-nano-0.2')  # Default KittenTTS model
 kittentts_voice = os.environ.get('KITTENTTS_VOICE', 'expr-voice-3-f')  # Default KittenTTS voice
@@ -374,6 +374,8 @@ AVAILABLE_VOICES = {
             ('VR6AewLTigWG4xSOukaG', 'Arnold'),
             ('pNInz6obpgDQGcFmaJgB', 'Adam'),
             ('yoZ06aMxZJJ28mfd3POQ', 'Sam'),
+            ('BpjGufoPiobT79j2vtj4', 'Priyanka - Calm, Neutral and Relaxed Late Night Radio'),
+            ('5l5f8iK3YPeGga21rQIX', 'Adeline - Feminine and Conversational for MCP'),
         ]
     },
     'deepgram': {
@@ -655,7 +657,11 @@ def get_state_voice_if_valid() -> Optional[str]:
     """Check if voice is valid for the given provider."""
     state = get_shared_state()
     provider = state.tts_provider or tts_provider
+    
+    log_message("DEBUG", f"get_state_voice_if_valid check - provider={provider}, state.voice={state.tts_voice}")
+    
     if provider not in AVAILABLE_VOICES:
+        log_message("DEBUG", f"provider {provider} not in AVAILABLE_VOICES")
         return None
 
     voices = get_all_voices_for_provider(provider)
@@ -665,6 +671,8 @@ def get_state_voice_if_valid() -> Optional[str]:
         valid_ids = [voice_id for voice_id, _ in voices]
         if state.tts_voice in valid_ids:
             return state.tts_voice
+        else:
+             log_message("DEBUG", f"Voice {state.tts_voice} NOT in valid_ids: {valid_ids}")
     else:
         if state.tts_voice in voices:
             return state.tts_voice
@@ -1566,10 +1574,23 @@ class TTSProvider(ABC):
         if key in self.config:
             return self.config[key]
         
-        # Then check shared state
+        # Then check shared state with key mapping
+        # Provider keys like 'voice_id' need to map to state attributes like 'tts_voice'
         shared_state = get_shared_state()
-        if hasattr(shared_state, 'tts') and hasattr(shared_state.tts, key):
-            return getattr(shared_state.tts, key)
+        key_mapping = {
+            'voice_id': 'tts_voice',
+            'voice': 'tts_voice',
+            'region': 'tts_region',
+            'language': 'tts_language',
+            'model': 'tts_model',
+            'rate': 'tts_rate',
+            'pitch': 'tts_pitch',
+        }
+        state_key = key_mapping.get(key, f'tts_{key}')
+        if hasattr(shared_state, state_key):
+            value = getattr(shared_state, state_key)
+            if value is not None:
+                return value
         
         # Finally return default
         return default
@@ -1691,7 +1712,6 @@ class GoogleCloudProvider(TTSProvider):
 
 class ElevenLabsProvider(TTSProvider):
     """ElevenLabs TTS provider implementation."""
-    
     def synthesize(self, text: str) -> Optional[Tuple[bytes, str]]:
         voice_id = self.get_config_value('voice_id', elevenlabs_voice_id)
         api_key = os.environ.get('ELEVENLABS_API_KEY')
@@ -1705,12 +1725,15 @@ class ElevenLabsProvider(TTSProvider):
             'xi-api-key': api_key
         }
         
+        # list_model=Request("https://api.elevenlabs.io/v1/models", headers=headers)
+    
         data = {
             'text': text,
-            'model_id': 'eleven_monolingual_v1',
+            'model_id': 'eleven_v3', # eleven_multilingual_v2
             'voice_settings': {
                 'stability': 0.5,
-                'similarity_boost': 0.5
+                'similarity_boost': 0.5,
+                'speed': 0.8
             }
         }
 
@@ -2742,7 +2765,7 @@ def queue_for_speech(original_text: str, line_number: Optional[int] = None, sour
     log_message("DEBUG", f"queue_for_speech received: '{original_text}' (exception_match={exception_match}, has_constituent_parts={constituent_parts is not None})")
 
     active_profile = _get_active_profile()
-    log_message("DEBUG", f"active_profile_is: '{active_profile.name}'")
+    log_message("INFO", f"active_profile_is: '{active_profile.name}'. with_text: '{original_text}'")
 
     if active_profile.name == "codex":
         agent_message = _wait_for_codex_agent_message(max_wait=0.25)
@@ -3239,11 +3262,25 @@ def select_best_tts_provider(excluded_providers=None) -> str | None:
             print(f"Warning: Preferred TTS provider '{preferred}' is not properly configured. Searching for alternatives...")
             log_message("WARNING", f"Preferred TTS provider {preferred} failed validation, searching for alternatives")
     
+    # Define preference order for providers (prioritize specific API keys over general cloud credentials)
+    priority_order = [
+         'openai', 'elevenlabs', 'deepgram', 'gcloud', 'azure', 'kittentts', 'kokoro', 'aws', 'polly', 'system'
+    ]
+    
     # Get all accessible providers except system and excluded providers
     available_providers = [
-        provider for provider, info in sorted(accessible.items())
+        provider for provider, info in accessible.items()
         if info['available'] and provider != 'system' and provider not in excluded_providers
     ]
+    
+    # Sort available providers by priority index, falling back to name
+    def get_priority(name):
+        try:
+            return priority_order.index(name)
+        except ValueError:
+            return 999
+            
+    available_providers.sort(key=lambda x: (get_priority(x), x))
     
     # Validate each provider thoroughly before selecting (silent mode to avoid spam)
     for provider in available_providers:

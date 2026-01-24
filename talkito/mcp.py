@@ -55,11 +55,15 @@ def log_message(level: str, message: str):
     # If we have a log file path, ensure logging is enabled
     if _log_file_path:
         # Import is_logging_enabled to check current state
-        from .logs import is_logging_enabled
+        from .logs import is_logging_enabled, ensure_logging_handlers
 
         # Only setup if not already enabled
         if not is_logging_enabled():
             setup_logging(_log_file_path, mode='a')  # Use append mode to not overwrite
+            
+        # PROACTIVE FIX: Ensure handlers are present on every log attempt
+        # This protects against Uvicorn or other libs stripping handlers at runtime
+        ensure_logging_handlers()
 
     # Also print important messages to stderr for debugging
     # if level in ["ERROR", "CRITICAL", "WARNING"]:
@@ -934,7 +938,7 @@ async def disable_tts() -> str:
     return await _disable_tts_internal()
 
 @app.tool()
-async def speak_text(text: str, clean_text_flag: bool = False) -> None:
+async def speak_text(text: str, clean_text_flag: bool = False) -> str:
     """
     Convert text to speech using the talkito TTS engine
     
@@ -945,7 +949,7 @@ async def speak_text(text: str, clean_text_flag: bool = False) -> None:
     try:
         global _last_spoken_text, _last_spoken_time
         set_active_profile("mcp")
-        # Initialization handled automatically by TTS system
+        
         log_message("INFO", f"speak_text_called_with_text:  {text}, clean_text_flag: {clean_text_flag}")
 
         # Clean text if requested
@@ -959,7 +963,7 @@ async def speak_text(text: str, clean_text_flag: bool = False) -> None:
         from .core import should_skip_line
         if not processed_text.strip() or should_skip_line(processed_text):
             log_message("INFO", f"Skipped speaking: '{text}'")
-            return None
+            return "Skipped (empty or filtered)"
 
         # Check for duplicate text
         if _last_spoken_text == processed_text:
@@ -967,7 +971,7 @@ async def speak_text(text: str, clean_text_flag: bool = False) -> None:
             current_time = time.time()
             if _last_spoken_time and (current_time - _last_spoken_time) < 5.0:
                 log_message("INFO", f"Skipped duplicate text: '{processed_text[:50]}...' (spoken {current_time - _last_spoken_time:.1f}s ago)")
-                return None
+                return "Skipped (duplicate)"
 
         # Update last spoken text and time
         _last_spoken_text = processed_text
@@ -977,12 +981,12 @@ async def speak_text(text: str, clean_text_flag: bool = False) -> None:
         tts.queue_for_speech(processed_text, None)
 
         log_message("INFO", "speak_text completed")
-        return None
+        return "Queued for speech"
 
     except Exception as e:
         error_msg = f"Error speaking text: {str(e)}"
         log_message("ERROR", f"speak_text error: {error_msg}")
-        return None
+        return error_msg
 
 @app.tool()
 async def skip_current_speech() -> str:
@@ -3226,9 +3230,9 @@ def main():
     parser = argparse.ArgumentParser(description='Talkito MCP Server - TTS/ASR via Model Context Protocol')
     parser.add_argument('--log-file', type=str, help='Path to log file for debugging')
     parser.add_argument('--port', type=int, help='Port to run the server on (for SSE transport)')
-    parser.add_argument('--transport', type=str, choices=['stdio', 'sse'], default='stdio',
+    parser.add_argument('--transport', type=str, choices=['stdio', 'sse', 'streamable-http'], default='streamable-http',
                         help='Transport type: stdio (default) or sse')
-    parser.add_argument('--no-http-api', action='store_true', 
+    parser.add_argument('--no-http-api', action='store_true',
                         help='Disable HTTP API server (SSE transport only)')
     parser.add_argument('--tts-provider', type=str, 
                         choices=['system', 'openai', 'aws', 'polly', 'azure', 'gcloud', 'elevenlabs', 'deepgram'],
@@ -3267,8 +3271,46 @@ def main():
         os.environ['TALKITO_PREFERRED_ASR_PROVIDER'] = args.asr_provider
     
     # Start background update checker
-    from .update import start_background_update_checker
-    start_background_update_checker()
+    # from .update import start_background_update_checker
+    # start_background_update_checker()
+    
+    try:
+        # If no CLI provider specified, clear any persisted preference to allow auto-detection
+        # from environment variables (e.g. .talkito.env) using the priority list
+
+        # Use existing get_shared_state accessor
+        state = get_shared_state()
+        
+        # DEBUG: Check if env vars are loaded
+        import os
+        log_message("INFO", f"DEBUG CHECK: ELEVENLABS_API_KEY present: {bool(os.environ.get('ELEVENLABS_API_KEY'))}")
+        log_message("INFO", f"DEBUG CHECK: TALKITO_PREFERRED_TTS_PROVIDER: {os.environ.get('TALKITO_PREFERRED_TTS_PROVIDER')}")
+        log_message("INFO", f"DEBUG CHECK: CWD: {os.getcwd()}")
+        if not args.tts_provider:
+             # state.set_tts_config(provider=None) does nothing if provider is None
+             # We must set it directly to clear the stale "system" preference read from disk
+             state.tts_provider = None
+        
+        # Reset provider to None to force re-evaluation from environment variables
+        selected_tts = tts.select_best_tts_provider()
+        log_message("INFO", f"Startup DEBUG: select_best_tts_provider returned: {selected_tts}")
+        
+        state.set_tts_config(provider=selected_tts,voice="BpjGufoPiobT79j2vtj4") # for mcp special voice       
+        # Verify state content immediately
+        log_message("INFO", f"Startup DEBUG: Verified state provider={state.tts_provider} voice={state.tts_voice}")
+        log_message("INFO", f"Startup DEBUG: selected_tts_completed: {selected_tts}")
+
+        
+        # Start TTS worker to ensure queue processing
+        engine = tts.detect_tts_engine()
+        log_message("INFO", f"Starting TTS worker with engine: {engine}")
+        # Fix NameError: auto_skip_tts is not defined here, passing True explicitly
+        tts.start_tts_worker(engine, True)
+
+        # # Also initialize ASR system
+        # asr.initialize_asr_system()
+    except Exception as e:
+        log_message("ERROR", f"Failed to initialize TTS/ASR: {e}")
     
     try:
         print("=" * 60, file=sys.stderr)
@@ -3309,20 +3351,19 @@ def main():
             print("\nStarting stdio server...", file=sys.stderr)
             print("This process communicates via stdin/stdout", file=sys.stderr)
             print("=" * 60, file=sys.stderr)
-        else:  # SSE transport
+        else: 
             # Start HTTP API server on the next port if not disabled
             if not args.no_http_api:
                 api_port = start_http_api_server(port + 1)
                 
                 print("\nStarting servers...", file=sys.stderr)
-                print(f"  MCP SSE server on port {port}", file=sys.stderr)
+                print(f"  MCP {args.transport} server on port {port}", file=sys.stderr)
                 print(f"  HTTP API server on port {api_port}", file=sys.stderr)
-                print("\nConnect with the TalkiTo chrome extension", file=sys.stderr)
                 print("=" * 60, file=sys.stderr)
             else:
-                print(f"\nStarting SSE server on port {port}...", file=sys.stderr)
+                print(f"\nStarting {args.transport} server on port {port}...", file=sys.stderr)
                 print("Connect with:", file=sys.stderr)
-                print(f"  claude mcp add talkito http://127.0.0.1:{port} --transport sse", file=sys.stderr)
+                print(f"  claude mcp add talkito http://127.0.0.1:{port} --transport {args.transport}", file=sys.stderr)
                 print("=" * 60, file=sys.stderr)
         
         # Save logging state before FastMCP messes with it
@@ -3337,9 +3378,9 @@ def main():
                 log_message("INFO", "Starting stdio server")
                 app.run(transport="stdio")
             else:
-                log_message("INFO", f"Starting SSE server on port {port}")
+                log_message("INFO", f"Starting SSE server on port {port} with transport {args.transport}")
                 app.run(
-                    transport="sse",
+                    transport=args.transport,
                     host="127.0.0.1",
                     port=port,
                     log_level="warning"  # Reduce uvicorn log verbosity

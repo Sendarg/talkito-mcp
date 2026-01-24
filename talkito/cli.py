@@ -171,8 +171,8 @@ def parse_arguments():
                         help='Run as MCP server with SSE transport for real-time notifications')
     parser.add_argument('--port', type=int, metavar='PORT',
                         help='Port to run the MCP SSE server on (default: auto-find from 8000)')
-    parser.add_argument('--disable-mcp', action='store_true',
-                        help='Disable MCP server when running claude command (use wrapper mode only)')
+    parser.add_argument('--enable-mcp', action='store_true',
+                        help='Enable MCP server when running claude command (disabled by default)')
     # Setup helpers
     parser.add_argument('--setup-slack', action='store_true',
                         help='Show instructions for setting up Slack bot')
@@ -227,7 +227,7 @@ def parse_arguments():
             '--log-file', '--tts-provider', '--asr-provider', '--tts-voice', '--tts-region', '--tts-language',
             '--tts-rate', '--tts-pitch', '--tts-mode', '--capture-tts-output', '--asr-mode', '--asr-language', '--asr-model',
             '--sms-recipients', '--whatsapp-recipients', '--slack-channel', '--webhook-port', '--record', '--replay',
-            '--no-output', '--port', '--disable-mcp', '--dont-auto-skip-tts', '--disable-tts', '--profile', '--verbosity',
+            '--no-output', '--port', '--enable-mcp', '--dont-auto-skip-tts', '--disable-tts', '--profile', '--verbosity',
             '-v', '--verbose', '--mcp-server', '--mcp-sse-server', '--setup-slack', '--setup-whatsapp'
         }
         
@@ -364,6 +364,15 @@ async def run_talkito_command(args) -> int:
     # Special handling for 'claude' or 'codex' command
     if args.command in ('claude', 'codex'):
         log_message("INFO", f"Starting terminal agent mode for {args.command}")
+        
+        # Set agent-specific voices
+        # Codex: Adeline (5l5f8iK3YPeGga21rQIX)
+        # Claude: uses env voice (fallback)
+        if args.command == 'codex':
+            shared_state.set_tts_config(voice="5l5f8iK3YPeGga21rQIX")
+            log_message("INFO", "Set Codex voice to Adeline (5l5f8iK3YPeGga21rQIX)")
+        # Claude uses env voice by default (no explicit voice set)
+        
         try:
             await run_terminal_agent_extensions(args)
         finally:

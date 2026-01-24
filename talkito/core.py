@@ -290,6 +290,7 @@ class ASRState:
 
 # State instances will be created by TalkitoCore
 active_profile: Optional[Profile] = None  # Will be initialized to default profile
+command_profile: Optional[Profile] = None  # Stores the initial command profile
 terminal = None  # Will be set by TalkitoCore
 in_code_block = False  # Track if we're inside a code block (```)
 asr_state: ASRState = ASRState()  # Will be set by TalkitoCore
@@ -500,6 +501,7 @@ def _send_pending_text_delayed():
 
 
 def send_pending_text():
+    
     # Cancel any pending timer first
     with terminal.pending_text_timer_lock:
         if terminal.pending_text_timer:
@@ -507,6 +509,13 @@ def send_pending_text():
             terminal.pending_text_timer = None
 
     if terminal.pending_speech_text and ''.join(terminal.pending_speech_text).strip():
+        # Check if we need to switch back from MCP profile
+        global active_profile, command_profile
+        log_message("INFO", f"active_profile_is: '{active_profile.name}'. command_profile_is: '{command_profile.name}'")
+        if active_profile and active_profile.name == 'mcp' and command_profile:
+            log_message("INFO", f"Auto-switching profile from 'mcp' back to '{command_profile.name}' for pending text")
+            set_active_profile(command_profile.name)
+
         log_message("DEBUG", f"terminal_pending_speech_text {terminal.pending_speech_text}")
         pending_text = ''.join(terminal.pending_speech_text)
         response_prefix = active_profile.response_prefix
@@ -670,16 +679,17 @@ def clean_text(text: str) -> str:
     text = ANSI_NUMBER_M_PATTERN.sub(' ', text)
     # Remove Unicode block drawing characters (▘▘ ▝▝ etc.)
     text = BLOCK_DRAWING_PATTERN.sub(' ', text)
-
+    
+    # Remove multiple spaces 
     output_string = re.sub(r'\s+', ' ', text).strip()
     # if not output_string.startswith(active_profile.response_prefix):
     #     return ""
-    log_message("DEBUG", f"claude_strip_profile_symbols_clean: {output_string}")
+    log_message("DEBUG", f"strip_profile_symbols_clean: {output_string}")
     for s in active_profile.strip_symbols:
         if s in output_string:
             output_string = output_string.split(s)[0]
-    log_message("DEBUG", f"claude_strip_profile_symbols_cleaned: {output_string}")
-
+            log_message("DEBUG", f"claude_strip_profile_symbols_cleaned: {output_string}")
+    
     # Filter out non-printable characters
     cleaned_text = ''.join(char for char in output_string if ord(char) >= 32 or char in '\n\t')
     log_message("DEBUG", f"text_cleaned: {cleaned_text}")
@@ -3381,6 +3391,7 @@ class TalkitoCore:
         self.terminal = TerminalState()
         self.asr_state = ASRState()
         self.active_profile: Optional[Profile] = None  # Will be initialized to default profile
+        self.command_profile: Optional[Profile] = None  # Stores the initial command profile
         
         # Set up logging
         self.setup_logging(log_file_path)
@@ -3403,7 +3414,7 @@ class TalkitoCore:
                          record_file: str = None) -> int:
         """Run a command with TTS and optional ASR support"""
         # Update globals that are used by helper functions
-        global current_master_fd, current_proc, verbosity_level, active_profile
+        global current_master_fd, current_proc, verbosity_level, active_profile, command_profile
         global terminal, asr_state, comm_manager
         
         # Initialize terminal and asr_state if not already done
@@ -3416,6 +3427,7 @@ class TalkitoCore:
         current_proc = self.current_proc  
         verbosity_level = self.verbosity_level
         active_profile = self.active_profile
+        command_profile = self.command_profile
         terminal = self.terminal
         asr_state = self.asr_state
         # Only update comm_manager if not already set (e.g., from run_with_talkito)
@@ -3549,6 +3561,9 @@ async def run_with_talkito(command: List[str], args) -> int:
     # Ensure we have at least a default profile
     if core.active_profile is None:
         core.active_profile = get_profile('default')
+
+    # Store the initial profile as the command profile
+    core.command_profile = core.active_profile
 
     log_message("DEBUG", "Set up TTS engine")
     # Set up TTS engine

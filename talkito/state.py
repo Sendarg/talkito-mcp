@@ -507,8 +507,9 @@ class SharedStateManager:
                         self.state.tts_provider = data['tts_provider']
                     if 'asr_provider' in data:
                         self.state.asr_provider = data['asr_provider']
-                    if 'tts_voice' in data:
-                        self.state.tts_voice = data['tts_voice']
+                    # NOTE: tts_voice is NOT loaded from persisted state
+                    # Voice should come from env vars or explicit config per-process
+                    # This allows CLI and MCP to use different voices
                     if 'tts_region' in data:
                         self.state.tts_region = data['tts_region']
                     if 'tts_language' in data:

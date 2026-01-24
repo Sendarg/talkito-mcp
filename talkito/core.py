@@ -41,7 +41,7 @@ from typing import Optional, List, Tuple, Dict, Union, Deque, Any
 from concurrent.futures import ThreadPoolExecutor
 
 from . import asr, comms, tts
-from .profiles import get_profile, Profile
+from .profiles import get_profile, Profile, PROFILES
 from .logs import setup_logging, get_logger, log_message, restore_stderr, is_logging_enabled
 from .state import get_shared_state, sync_communication_state_from_config
 from .tts import stop_tts_immediately
@@ -293,6 +293,27 @@ active_profile: Optional[Profile] = None  # Will be initialized to default profi
 terminal = None  # Will be set by TalkitoCore
 in_code_block = False  # Track if we're inside a code block (```)
 asr_state: ASRState = ASRState()  # Will be set by TalkitoCore
+
+
+def set_active_profile(profile_name: str) -> bool:
+    """Set the active profile by name"""
+    global active_profile
+    
+    # Check if profile exists
+    if profile_name not in PROFILES:
+        return False
+        
+    profile = get_profile(profile_name)
+    if profile:
+        active_profile = profile
+        log_message("INFO", f"Switched active profile to: {profile.name}")
+        return True
+    return False
+
+
+def get_available_profiles_list() -> List[str]:
+    """Get list of available profile names"""
+    return sorted(list(PROFILES.keys()))
 
 class OutputBuffer:
     """Buffer for handling non-blocking stdout writes"""
@@ -617,7 +638,7 @@ def queue_output(text: str, line_number: Optional[int] = None, exception_match: 
 def clean_text(text: str) -> str:
     if text.strip() == "":
         return ""
-    log_message("DEBUG", f"clean_for_text: {text}")
+    log_message("DEBUG", f"text_clean: {text}")
     """Strip ANSI escape codes and terminal control sequences"""
     text = _trim_after_cursor_move(text)
     text = text.replace("’", "'")
@@ -651,17 +672,17 @@ def clean_text(text: str) -> str:
     text = BLOCK_DRAWING_PATTERN.sub(' ', text)
 
     output_string = re.sub(r'\s+', ' ', text).strip()
-    if not output_string.startswith(active_profile.response_prefix):
-        return ""
-    log_message("DEBUG", f"clean_strip_profile_symbols: {output_string}")
+    # if not output_string.startswith(active_profile.response_prefix):
+    #     return ""
+    log_message("DEBUG", f"claude_strip_profile_symbols_clean: {output_string}")
     for s in active_profile.strip_symbols:
         if s in output_string:
             output_string = output_string.split(s)[0]
-    log_message("DEBUG", f"cleaned_strip_profile_symbols: {output_string}")
+    log_message("DEBUG", f"claude_strip_profile_symbols_cleaned: {output_string}")
 
     # Filter out non-printable characters
     cleaned_text = ''.join(char for char in output_string if ord(char) >= 32 or char in '\n\t')
-    log_message("DEBUG", f"cleaned_for_text: {cleaned_text}")
+    log_message("DEBUG", f"text_cleaned: {cleaned_text}")
     return cleaned_text
 
 def strip_profile_symbols(text: str) -> str:
@@ -747,7 +768,7 @@ def should_skip_line(line: str) -> bool:
     if active_profile:
         should_skip = active_profile.should_skip(line, verbosity_level)
         if should_skip:
-            log_message("FILTER", f"Skipped by profile (verbosity={verbosity_level}): '{line}'")
+            log_message("FILTER", f"Skipped by profile (profile={active_profile.name}, reason={active_profile.get_skip_reason(line)}, verbosity={verbosity_level}): '{line}'")
             return True
 
     # Check default filters

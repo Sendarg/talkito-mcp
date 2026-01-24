@@ -38,7 +38,7 @@ from urllib.parse import urlparse
 # Import talkito functionality
 from . import asr, comms, tts
 from .comms import SlackProvider, TwilioWhatsAppProvider
-from .core import ensure_asr_initialized
+from .core import ensure_asr_initialized, set_active_profile, get_available_profiles_list
 from .logs import log_message as _base_log_message, setup_logging
 from .state import get_shared_state, save_shared_state, get_status_summary
 from .tts import AVAILABLE_VOICES, get_all_voices_for_provider, get_tts_config
@@ -674,7 +674,6 @@ async def turn_off() -> str:
         log_message("ERROR", f"turn_off error: {error_msg}")
         return error_msg
 
-
 # Internal helper functions for TTS/ASR control
 
 async def _enable_tts_internal() -> str:
@@ -935,7 +934,7 @@ async def disable_tts() -> str:
     return await _disable_tts_internal()
 
 @app.tool()
-async def speak_text(text: str, clean_text_flag: bool = True) -> None:
+async def speak_text(text: str, clean_text_flag: bool = False) -> None:
     """
     Convert text to speech using the talkito TTS engine
     
@@ -945,9 +944,9 @@ async def speak_text(text: str, clean_text_flag: bool = True) -> None:
     """
     try:
         global _last_spoken_text, _last_spoken_time
-
+        set_active_profile("mcp")
         # Initialization handled automatically by TTS system
-        log_message("INFO", f"speak_text called with text length: {len(text)}, clean_text_flag: {clean_text_flag}")
+        log_message("INFO", f"speak_text_called_with_text:  {text}, clean_text_flag: {clean_text_flag}")
 
         # Clean text if requested
         processed_text = text
@@ -959,7 +958,7 @@ async def speak_text(text: str, clean_text_flag: bool = True) -> None:
         # Skip empty or unwanted text
         from .core import should_skip_line
         if not processed_text.strip() or should_skip_line(processed_text):
-            log_message("INFO", f"Skipped speaking: '{text[:50]}...' (filtered out)")
+            log_message("INFO", f"Skipped speaking: '{text}'")
             return None
 
         # Check for duplicate text

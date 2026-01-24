@@ -23,7 +23,6 @@ import argparse
 from typing import Dict, List, Tuple, Optional, Pattern, Union, Sequence
 from dataclasses import dataclass, field
 
-
 @dataclass
 class Profile:
     """Represents a program-specific profile with compiled patterns"""
@@ -296,7 +295,7 @@ COMMON_SKIP_PATTERNS = [
     (3, r'cwd:'),
     (3, r'⎿'),  # subheadings underneath an edit block like "Wrote 122 lines to x.py"
     (3, r'(Bash|Read|Edit|Write|Grep|Task|MultiEdit|NotebookEdit|WebFetch|TodoWrite|Update|Modify|Create|Search)\s*\('),
-    (3, r'^[^A-Za-z0-9]*[A-Za-z][a-z]+(?:-[a-z]+)*(?:\.\.\.|…|\.)'),
+    (3, r'^[^A-Za-z0-9]*[A-Za-z][a-z]+(?:-[a-z]+)*(?:\.\.\.|…|\.)\s*$'),
     (3, r'^∴'),
 
     (4, r'^\^C '),
@@ -377,7 +376,7 @@ CODEX_PROFILE = Profile(
         (2, r'^    '),
         (3, r'talkito:'),
         (3, r'^\s*[└□✔]'),
-        (3, r'^[^\s•]'),  # Skip lines not starting with space/tab or •
+        (3, r'^[^\s•]'),  # match lines not starting with space/tab or •, then skip
         (3, r'• (Ran|Explored|Edited|Added|Updated|Called)'),
         (3, r'^› '),
         (3, r'esc to '),
@@ -521,6 +520,20 @@ PSQL_PROFILE = Profile(
     ],
 )
 
+# Default empty profile for when no specific profile is set
+MCP_PROFILE = Profile(
+    supported=True,
+    name='mcp',
+    response_prefix='',
+    raw_skip_patterns=[],
+    skip_patterns=COMMON_SKIP_PATTERNS,
+    speak_patterns=[],
+    prompt_patterns=[],
+    skip_progress=[],
+    strip_symbols=[],
+    input_start=[],
+    input_mic_replace='',
+)
 
 # Default empty profile for when no specific profile is set
 DEFAULT_PROFILE = Profile(
@@ -548,6 +561,7 @@ PROFILES: Dict[str, Profile] = {
     'mysql': MYSQL_PROFILE,
     'psql': PSQL_PROFILE,
     'opencode': OPENCODE_PROFILE,
+    'mcp': MCP_PROFILE,
     'default': DEFAULT_PROFILE,
 }
 

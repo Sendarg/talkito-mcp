@@ -127,7 +127,7 @@ class SpeechItem:
 
 # Configuration constants
 MIN_SPEAK_LENGTH = 4  # Minimum characters before speaking
-MAX_SPEAK_LENGTH = 600
+MAX_SPEAK_LENGTH = 400
 CACHE_SIZE = 10000  # Cache size for similarity checking
 SIMILARITY_THRESHOLD = 0.85  # How similar text must be to be considered a repeat
 DEBOUNCE_TIME = 0.5  # Seconds to wait before speaking rapidly changing text
@@ -198,7 +198,6 @@ kittentts_voice = os.environ.get('KITTENTTS_VOICE', 'expr-voice-3-f')  # Default
 kokoro_language = os.environ.get('KOKORO_LANGUAGE', 'a')  # Default Kokoro language (American English)
 kokoro_voice = os.environ.get('KOKORO_VOICE', 'af_heart')  # Default Kokoro voice
 kokoro_speed = os.environ.get('KOKORO_SPEED', '1.0')  # Default Kokoro speed
-agent_message_only = os.environ.get('TTS_ONLY_AGENT_MESSAGES', '1').lower() in ('1', 'true', 'yes', 'on')
 
 # Local model caching for offline TTS providers (kokoro/kittentts)
 _local_model_cache = None
@@ -2056,7 +2055,7 @@ def _find_latest_codex_session_file() -> Optional[Path]:
     return latest_file
 
 
-def _get_active_agent_name() -> Optional[str]:
+def _get_active_profile() -> Optional[str]:
     """Return the active profile/agent name if available without creating hard dependencies."""
     try:
         # Imported lazily to avoid circular import at module load
@@ -2064,7 +2063,7 @@ def _get_active_agent_name() -> Optional[str]:
 
         profile = getattr(core, "active_profile", None)
         if profile is not None:
-            return getattr(profile, "name", None)
+            return profile
     except Exception:
         return None
     return None
@@ -2740,36 +2739,35 @@ def queue_for_speech(original_text: str, line_number: Optional[int] = None, sour
         return ""
 
     # Log the original text before any filtering
-    log_message("INFO", f"queue_for_speech received: '{original_text}' (exception_match={exception_match}, has_constituent_parts={constituent_parts is not None})")
+    log_message("DEBUG", f"queue_for_speech received: '{original_text}' (exception_match={exception_match}, has_constituent_parts={constituent_parts is not None})")
 
+    active_profile = _get_active_profile()
+    log_message("DEBUG", f"active_profile_is: '{active_profile.name}'")
 
-    agent_message = None
-    active_agent = _get_active_agent_name()
-    if agent_message_only:
-        # Only speak agent messages; original text merely triggers a lookup
-        if active_agent == "codex":
-            agent_message = _wait_for_codex_agent_message(max_wait=0.25)
-            if agent_message:
-                log_message("DEBUG", f"Fetched Codex agent message from session log: '{agent_message}'")
-            else:
-                log_message("INFO", "No Codex agent message found in time; dropping speech for this trigger")
-                return ""
-        elif active_agent == "claude":
-            agent_message = _wait_for_claude_agent_message(max_wait=0.25)
-            if agent_message:
-                log_message("DEBUG", f"Fetched Claude agent message from session log: '{agent_message}'")
-            else:
-                log_message("INFO", "No Claude agent message found in time; dropping speech for this trigger")
-                return ""
+    if active_profile.name == "codex":
+        agent_message = _wait_for_codex_agent_message(max_wait=0.25)
+        if agent_message:
+            speakable_text = agent_message
+            log_message("DEBUG", f"Fetched Codex agent message from session log: '{agent_message}'")
         else:
-            log_message("DEBUG", "TTS_ONLY_AGENT_MESSAGES enabled but active agent is not Codex/Claude; dropping speech")
+            log_message("INFO", "No Codex agent message found in time; dropping speech for this trigger")
             return ""
-        speakable_text = agent_message
+    elif active_profile.name == "claude":
+        agent_message = _wait_for_claude_agent_message(max_wait=0.25)
+        if agent_message:
+            speakable_text = agent_message
+            log_message("DEBUG", f"Fetched Claude agent message from session log: '{agent_message}'")
+        else:
+            log_message("INFO", "No Claude agent message found in time; dropping speech for this trigger")
+            return ""
+    elif active_profile.name == "mcp":
+        speakable_text = original_text
+        log_message("DEBUG", f"Fetched MCP message: '{original_text}'")
     else:
+        log_message("DEBUG", f"other type of profile: '{active_profile.name}'")
         return ""
+    
 
-
-        
     if not speakable_text or len(speakable_text) < MIN_SPEAK_LENGTH or len(speakable_text) > MAX_SPEAK_LENGTH:
         log_message("INFO", f"Text too short or too long: '{len(speakable_text)}' -> '{speakable_text}'")
         return ""

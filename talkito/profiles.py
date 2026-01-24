@@ -347,7 +347,8 @@ CLAUDE_PROFILE = Profile(
         (4, r'^\s*>\s*'),
     ],
     skip_progress=['Forming', 'Exploring'],
-    strip_symbols=['⏺'],
+    # strip_symbols=[],
+    strip_symbols=['✳','✢','·','✶','✻','✽','…','❯'],
     prompt_patterns=[
         r'^│\s*>\s*',        # Line starting with box character and prompt
         r'^>\s*.+',          # Line starting with >
@@ -362,7 +363,7 @@ CLAUDE_PROFILE = Profile(
 CODEX_PROFILE = Profile(
     supported=True,
     name='codex',
-    response_prefix='⏺',
+    response_prefix='•',
     continuation_prefix=r'^(\s+[-\w()\'"]|  [a-z]\w*\.|[a-z]\w*\. )',
     question_prefix=r'│ Do',
     raw_skip_patterns=[

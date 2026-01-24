@@ -486,10 +486,16 @@ def send_pending_text():
             terminal.pending_text_timer = None
 
     if terminal.pending_speech_text and ''.join(terminal.pending_speech_text).strip():
+        log_message("DEBUG", f"terminal_pending_speech_text {terminal.pending_speech_text}")
         pending_text = ''.join(terminal.pending_speech_text)
+        response_prefix = active_profile.response_prefix
+        if not pending_text.startswith(response_prefix):
+            log_message("DEBUG", f"send_pending_text_Skipping: '{pending_text}'")
+            terminal.pending_speech_text.clear()
+            return
+
         log_message("DEBUG", f"send_pending_text [{pending_text}]")
         log_message("DEBUG", f"last_sent_text {terminal.last_sent_text}")
-
         # Check for duplicate sends (but allow questions and exceptions through)
         if pending_text.strip() == terminal.last_sent_text.strip():
             # Don't skip if this is a question or exception match - these should always be spoken
@@ -609,8 +615,10 @@ def queue_output(text: str, line_number: Optional[int] = None, exception_match: 
                 log_message("DEBUG", "Started 2-second timer for pending text")
 
 def clean_text(text: str) -> str:
+    if text.strip() == "":
+        return ""
+    log_message("DEBUG", f"clean_for_text: {text}")
     """Strip ANSI escape codes and terminal control sequences"""
-
     text = _trim_after_cursor_move(text)
     text = text.replace("’", "'")
 
@@ -622,32 +630,39 @@ def clean_text(text: str) -> str:
         flags=re.IGNORECASE
     )
 
-    text = ANSI_CHAR_PATTERN.sub('', text)  # Remove ANSI sequences with orphaned letters
-    text = ANSI_PATTERN.sub('', text)
-    text = ANSI_ESCAPE_PATTERN.sub('', text)
-    text = text.replace('\x1B', '')
+    text = ANSI_CHAR_PATTERN.sub(' ', text)  # Remove ANSI sequences with orphaned letters
+    text = ANSI_PATTERN.sub(' ', text)
+    text = ANSI_ESCAPE_PATTERN.sub(' ', text)
+    text = text.replace('\x1B', ' ')
 
     # Remove various control characters
-    text = text.replace('\x08', '')  # Backspace
-    text = text.replace('\x0D', '')  # Carriage return
+    text = text.replace('\x08', ' ')  # Backspace
+    text = text.replace('\x0D', ' ')  # Carriage return
 
     # Remove standalone 'm' characters that are likely orphaned from ANSI codes
     # This handles cases where 'm' appears after whitespace or at start of string
     # but NOT when it's part of a word (like 'am', 'pm', 'them', etc.)
     # Also preserve contractions like "I'm", "don't", etc.
-    text = ORPHANED_PATTERN.sub('', text)
-
-    text = DASH_LINE_PATTERN.sub('', text)
-
+    text = ORPHANED_PATTERN.sub(' ', text)
+    text = DASH_LINE_PATTERN.sub(' ', text)
     # Also remove patterns like "2m" or "22m" that might be left from ANSI codes
-    text = ANSI_NUMBER_M_PATTERN.sub('', text)
-
+    text = ANSI_NUMBER_M_PATTERN.sub(' ', text)
     # Remove Unicode block drawing characters (▘▘ ▝▝ etc.)
-    text = BLOCK_DRAWING_PATTERN.sub('', text)
+    text = BLOCK_DRAWING_PATTERN.sub(' ', text)
+
+    output_string = re.sub(r'\s+', ' ', text).strip()
+    if not output_string.startswith(active_profile.response_prefix):
+        return ""
+    log_message("DEBUG", f"clean_strip_profile_symbols: {output_string}")
+    for s in active_profile.strip_symbols:
+        if s in output_string:
+            output_string = output_string.split(s)[0]
+    log_message("DEBUG", f"cleaned_strip_profile_symbols: {output_string}")
 
     # Filter out non-printable characters
-    return ''.join(char for char in text if ord(char) >= 32 or char in '\n\t')
-
+    cleaned_text = ''.join(char for char in output_string if ord(char) >= 32 or char in '\n\t')
+    log_message("DEBUG", f"cleaned_for_text: {cleaned_text}")
+    return cleaned_text
 
 def strip_profile_symbols(text: str) -> str:
     """Remove profile-specific symbols from text before TTS"""

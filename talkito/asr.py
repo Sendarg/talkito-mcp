@@ -290,7 +290,7 @@ def check_provider_imports(provider: str, requested_provider: str = None) -> Tup
         _provider_validation_cache[cache_key] = result
         return result
     # Providers that use built-in speech_recognition
-    if provider in ['google_free']:
+    if provider in ['google_free', 'google']:
         return cache_and_return(True, None)
     
     # Special case: local_whisper offline provider (try pywhispercpp first on Apple Silicon, then faster-whisper)
@@ -2160,7 +2160,7 @@ PROVIDERS = {
     'deepgram': DeepgramProvider,
     'local_whisper': FasterWhisperProvider,
     'gcloud': GoogleCloudProvider,
-    'google': GoogleCloudProvider,
+    'google': GoogleFreeProvider,
     'google_free': GoogleFreeProvider,
     'houndify': HoundifyProvider,
     'microsoft': AzureSpeechProvider,

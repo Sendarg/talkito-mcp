@@ -132,14 +132,14 @@ def parse_arguments():
     # ASR options
     asr_group = parser.add_argument_group('ASR options')
     asr_group.add_argument('--asr-mode', type=str,
-                           default='tap-to-talk',
+                           default='off',
                            help='ASR mode: off, auto-input, tap-to-talk, or file:<path> for testing (default: tap-to-talk)')
     asr_group.add_argument('--asr-provider', type=str,
                            choices=['google', 'gcloud', 'assemblyai', 'deepgram', 'houndify', 'aws', 'bing', 'local_whisper', 'off'],
                            help='ASR provider to use (use "off" to disable ASR)')
     asr_group.add_argument('--asr-language', type=str, default='en-US',
                            help='Language code for ASR (default: en-US)')
-    asr_group.add_argument('--asr-model', type=str,
+    asr_group.add_argument('--asr-model', type=str, 
                            help='ASR model to use (provider-specific)')
     
     # Communication options
@@ -173,7 +173,6 @@ def parse_arguments():
                         help='Port to run the MCP SSE server on (default: auto-find from 8000)')
     parser.add_argument('--disable-mcp', action='store_true',
                         help='Disable MCP server when running claude command (use wrapper mode only)')
-    
     # Setup helpers
     parser.add_argument('--setup-slack', action='store_true',
                         help='Show instructions for setting up Slack bot')

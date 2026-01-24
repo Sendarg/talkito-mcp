@@ -613,7 +613,7 @@ def run_api_server(args):
 def apply_terminal_code_agent_tool_filter():
     """Apply monkey patch to filter tools for terminal coding agents that call tts/asr directly"""
     # Store the original method from the tool manager
-    original_list_tools = app._tool_manager.list_tools
+    original_list_tools = app._tool_manager.get_tools
     
     # Define our filtered version
     async def filtered_list_tools():

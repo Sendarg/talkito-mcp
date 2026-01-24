@@ -127,6 +127,7 @@ class SpeechItem:
 
 # Configuration constants
 MIN_SPEAK_LENGTH = 4  # Minimum characters before speaking
+MAX_SPEAK_LENGTH = 600
 CACHE_SIZE = 10000  # Cache size for similarity checking
 SIMILARITY_THRESHOLD = 0.85  # How similar text must be to be considered a repeat
 DEBOUNCE_TIME = 0.5  # Seconds to wait before speaking rapidly changing text
@@ -160,16 +161,23 @@ RE_PUNCT_PERIOD_SPACE = re.compile(r'([!?:;])\.\s')
 RE_PUNCT_PERIOD_END = re.compile(r'([!?:;])\.$')
 RE_MULTIPLE_PERIODS = re.compile(r'\.(\s+\.)+')
 RE_GREATER_UNDERSCORE = re.compile(r'>_')
+RE_UNDERSCORE = re.compile(r'_')
 RE_NEWLINES = re.compile(r'\n+')
 RE_FUNCTION_CALL = re.compile(r'(\w+)_(\w+)(?:_(\w+))*\(\)')
 RE_UNDERSCORE_WORDS = re.compile(r'(\w+)_(\w+)(?:_(\w+))*')
 RE_TRAILING_PARENS = re.compile(r' *\([^)]*\)$')
+RE_BRACKETED_TEXT = re.compile(r'\([^)]*\)')
+RE_LINE_SPAN = re.compile(r':\d+')
 RE_MARKDOWN_BOLD = re.compile(r'\*\*([^*]+)\*\*')
 RE_MARKDOWN_ITALIC = re.compile(r'\*([^*]+)\*')
 RE_MARKDOWN_CODE = re.compile(r'`([^`]+)`')
 RE_NON_SPEECH_CHARS = re.compile(r'[^a-zA-Z0-9 .,!?:\'-•☐▪▫■□◦‣⁃-]')
 RE_MULTIPLE_SPACES = re.compile(r' +')
 RE_HAS_LETTERS = re.compile(r'[a-zA-Z]')
+AGENT_MESSAGE_REGEX = re.compile(
+    r'"type"\s*:\s*"event_msg"[^}]*"payload"\s*:\s*\{[^}]*"type"\s*:\s*"agent_message"[^}]*"message"\s*:\s*"([^"]+)"',
+    re.DOTALL,
+)
 
 # Global configuration
 auto_skip_tts_enabled = False  # Whether to auto-skip long text
@@ -190,6 +198,7 @@ kittentts_voice = os.environ.get('KITTENTTS_VOICE', 'expr-voice-3-f')  # Default
 kokoro_language = os.environ.get('KOKORO_LANGUAGE', 'a')  # Default Kokoro language (American English)
 kokoro_voice = os.environ.get('KOKORO_VOICE', 'af_heart')  # Default Kokoro voice
 kokoro_speed = os.environ.get('KOKORO_SPEED', '1.0')  # Default Kokoro speed
+agent_message_only = os.environ.get('TTS_ONLY_AGENT_MESSAGES', '1').lower() in ('1', 'true', 'yes', 'on')
 
 # Local model caching for offline TTS providers (kokoro/kittentts)
 _local_model_cache = None
@@ -200,6 +209,25 @@ _local_model_cache_lock = threading.Lock()
 _delayed_items_lock = threading.Lock()
 _delayed_timer = None
 _delayed_speech_item: Optional[SpeechItem] = None
+_tts_start_time = time.time()
+
+# Track Codex session state so we can read fresh agent messages from the Codex session logs
+_codex_session_lock = threading.Lock()
+_codex_session_state: Dict[str, Any] = {
+    "path": None,
+    "offset": 0,
+    "last_ts": None,
+    "last_message": None,
+}
+
+# Track Claude session state (per project) so we can read fresh agent messages from Claude session logs
+_claude_session_lock = threading.Lock()
+_claude_session_state: Dict[str, Any] = {
+    "path": None,
+    "offset": 0,
+    "last_ts": None,
+    "last_message": None,
+}
 
 # Provider registry for metadata (install instructions, env vars, etc.)
 TTS_PROVIDERS = {
@@ -1407,7 +1435,10 @@ def synthesize_and_play(synthesize_func, text: str, use_process_control: bool = 
     """Synthesize audio via provider function and play it."""
     try:
         result = synthesize_func(text)
-        if not result or not isinstance(result, tuple) or len(result) != 2:
+        if result is None:
+            log_message("ERROR", "Synthesizer returned no result (None)")
+            return False
+        if not isinstance(result, tuple) or len(result) != 2:
             log_message("ERROR", f"Synthesizer returned unexpected result: {result!r}")
             return False
         audio_bytes, ext = result
@@ -1665,6 +1696,9 @@ class ElevenLabsProvider(TTSProvider):
     def synthesize(self, text: str) -> Optional[Tuple[bytes, str]]:
         voice_id = self.get_config_value('voice_id', elevenlabs_voice_id)
         api_key = os.environ.get('ELEVENLABS_API_KEY')
+        if not api_key:
+            log_message("ERROR", "ElevenLabs API key missing (set ELEVENLABS_API_KEY)")
+            return None
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
         headers = {
             'Accept': 'audio/mpeg',
@@ -1687,7 +1721,17 @@ class ElevenLabsProvider(TTSProvider):
                          headers={**headers, 'Content-Type': 'application/json'})
             with urlopen(req) as response:
                 return response.read(), ".mp3"
-        except HTTPError:
+        except HTTPError as e:
+            error_body = ""
+            try:
+                error_body = e.read().decode('utf-8', errors='ignore')
+            except Exception:
+                pass
+            status = getattr(e, "code", "unknown")
+            log_message("ERROR", f"ElevenLabs HTTP error {status}: {error_body}")
+            return None
+        except Exception as e:
+            log_message("ERROR", f"ElevenLabs request failed: {e}")
             return None
 
 
@@ -1913,13 +1957,404 @@ def clean_punctuation_sequences(text: str) -> str:
     return text
 
 
+def _parse_iso_timestamp(timestamp: str) -> Optional[float]:
+    """Convert ISO timestamp string (with optional trailing Z) to epoch seconds."""
+    if not timestamp:
+        return None
+    try:
+        if isinstance(timestamp, str) and timestamp.endswith('Z'):
+            timestamp = timestamp[:-1] + '+00:00'
+        return datetime.fromisoformat(timestamp).timestamp()
+    except Exception:
+        return None
+
+
+def _extract_codex_agent_message_from_line(line: str) -> Tuple[Optional[str], Optional[float]]:
+    """Parse a single Codex session log line and return (message, timestamp)."""
+    try:
+        data = json.loads(line)
+    except Exception:
+        return None, None
+
+    if not isinstance(data, dict):
+        return None, None
+    if data.get("type") != "event_msg":
+        return None, None
+
+    payload = data.get("payload") or {}
+    if not isinstance(payload, dict) or payload.get("type") != "agent_message":
+        return None, None
+
+    message = payload.get("message")
+    ts_value = _parse_iso_timestamp(data.get("timestamp"))
+    if not isinstance(message, str):
+        return None, ts_value
+    return message, ts_value
+
+
+def _find_latest_codex_session_file() -> Optional[Path]:
+    """Locate the Codex session rollout file referenced by the latest history entry."""
+    history_path = Path.home() / ".codex" / "history.jsonl"
+    if not history_path.exists():
+        return None
+
+    last_line = None
+    try:
+        with history_path.open("r", encoding="utf-8") as history_file:
+            for line in history_file:
+                stripped = line.strip()
+                if stripped:
+                    last_line = stripped
+        if not last_line:
+            return None
+        history_entry = json.loads(last_line)
+    except Exception as e:
+        log_message("DEBUG", f"Error reading Codex history: {e}")
+        return None
+
+    session_id = history_entry.get("session_id") if isinstance(history_entry, dict) else None
+    ts_value = history_entry.get("ts") if isinstance(history_entry, dict) else None
+    if not isinstance(session_id, str):
+        return None
+
+    try:
+        session_date = datetime.fromtimestamp(ts_value) if isinstance(ts_value, (int, float)) else None
+    except (OSError, OverflowError, ValueError) as e:
+        log_message("DEBUG", f"Invalid Codex history timestamp: {e}")
+        session_date = None
+
+    if session_date is None:
+        return None
+
+    session_dir = (
+        Path.home()
+        / ".codex"
+        / "sessions"
+        / f"{session_date.year:04d}"
+        / f"{session_date.month:02d}"
+        / f"{session_date.day:02d}"
+    )
+    if not session_dir.exists():
+        return None
+
+    pattern = f"rollout-*-{session_id}.jsonl"
+    try:
+        matching_files = list(session_dir.glob(pattern))
+    except Exception as e:
+        log_message("DEBUG", f"Error listing Codex session files: {e}")
+        return None
+
+    if not matching_files:
+        return None
+
+    try:
+        latest_file = max(matching_files, key=lambda path: path.stat().st_mtime)
+    except OSError as e:
+        log_message("DEBUG", f"Error selecting latest Codex session file: {e}")
+        return None
+    log_message("INFO", f"get Codex session files: {latest_file}")
+    return latest_file
+
+
+def _get_active_agent_name() -> Optional[str]:
+    """Return the active profile/agent name if available without creating hard dependencies."""
+    try:
+        # Imported lazily to avoid circular import at module load
+        from . import core  # type: ignore
+
+        profile = getattr(core, "active_profile", None)
+        if profile is not None:
+            return getattr(profile, "name", None)
+    except Exception:
+        return None
+    return None
+
+
+def _get_latest_codex_agent_message() -> Optional[str]:
+    """Read the Codex session log for the newest unseen agent message."""
+    session_file = _find_latest_codex_session_file()
+    if not session_file:
+        return None
+
+    try:
+        size = session_file.stat().st_size
+    except OSError:
+        return None
+
+    with _codex_session_lock:
+        state = _codex_session_state
+        if state["path"] != session_file:
+            # New session file – start reading from the beginning of it
+            state.update({"path": session_file, "offset": 0, "last_ts": None, "last_message": None})
+        elif state["offset"] > size:
+            # File rotated/truncated
+            state["offset"] = 0
+
+        offset = state.get("offset", 0) or 0
+        last_ts = state.get("last_ts")
+
+    try:
+        with session_file.open("r", encoding="utf-8") as handle:
+            if offset:
+                handle.seek(offset)
+            lines = handle.readlines()
+            new_offset = handle.tell()
+    except Exception as e:
+        log_message("DEBUG", f"Failed reading Codex session file {session_file}: {e}")
+        return None
+
+    baseline_ts = last_ts if last_ts is not None else _tts_start_time - 1
+    candidates: List[Tuple[float, str]] = []
+
+    for line in lines:
+        message, ts_value = _extract_codex_agent_message_from_line(line)
+        if not message:
+            continue
+        if ts_value is None:
+            ts_value = time.time()
+        # Ignore stale history from before TalkiTo started to avoid replaying old conversations
+        if ts_value <= baseline_ts:
+            continue
+        candidates.append((ts_value, message))
+
+    with _codex_session_lock:
+        state = _codex_session_state
+        state["offset"] = new_offset
+
+        if not candidates:
+            return None
+
+        latest_ts, latest_msg = max(candidates, key=lambda item: item[0])
+        state["last_ts"] = latest_ts
+        state["last_message"] = latest_msg
+        return latest_msg
+
+
+def _wait_for_codex_agent_message(max_wait: float = 0.6, interval: float = 0.05) -> Optional[str]:
+    """Poll the Codex session log briefly to catch responses that land slightly after stdout."""
+    deadline = time.time() + max_wait
+    attempt = 0
+    while time.time() <= deadline:
+        message = _get_latest_codex_agent_message()
+        if message:
+            if attempt:
+                log_message("DEBUG", f"Found Codex agent message after retry {attempt}: '{message}'")
+            return message
+        attempt += 1
+        time.sleep(interval)
+    return None
+
+
+def _claude_project_dir(project_path: Optional[Path] = None) -> Optional[Path]:
+    """Return Claude project directory for the current working directory."""
+    try:
+        if project_path is None:
+            project_path = Path.cwd().resolve()
+        # Claude stores projects with slashes replaced by dashes and a leading dash
+        slug = "-" + project_path.as_posix().lstrip("/").replace("/", "-")
+        project_dir = Path.home() / ".claude" / "projects" / slug
+        return project_dir if project_dir.exists() else None
+    except Exception as e:
+        log_message("DEBUG", f"Failed to resolve Claude project dir: {e}")
+        return None
+
+
+def _find_latest_claude_session_file() -> Optional[Path]:
+    """Locate the newest Claude session file for the current project.
+
+    Preference order:
+    1. Ask the local Claude server for /status to get the active sessionId/projectPath.
+    2. Fall back to newest *.jsonl in the project directory.
+    3. Finally, fall back to sessions-index.json (best effort).
+    """
+    
+    # Next, pick newest *.jsonl in the project directory
+    def _latest_jsonl_for_project(project_path: Optional[Path]) -> Optional[Path]:
+        project_dir = _claude_project_dir(project_path)
+        if not project_dir:
+            return None
+        latest_path = None
+        latest_mtime = -1.0
+        try:
+            for path in project_dir.glob("*.jsonl"):
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                if mtime > latest_mtime:
+                    latest_mtime = mtime
+                    latest_path = path
+        except Exception as e:
+            log_message("DEBUG", f"Error scanning Claude project dir {project_dir}: {e}")
+            return None
+        return latest_path
+
+    candidate = _latest_jsonl_for_project(Path.cwd().resolve())
+    if candidate:
+        return candidate
+
+    # Fall back to index-based discovery
+    project_dir = _claude_project_dir()
+    if not project_dir:
+        return None
+
+    index_path = project_dir / "sessions-index.json"
+    if not index_path.exists():
+        return None
+
+    try:
+        with index_path.open("r", encoding="utf-8") as f:
+            index_data = json.load(f)
+    except Exception as e:
+        log_message("DEBUG", f"Failed to read Claude sessions index {index_path}: {e}")
+        return None
+
+    entries = index_data.get("entries") if isinstance(index_data, dict) else None
+    if not entries or not isinstance(entries, list):
+        return None
+
+    project_path = str(Path.cwd().resolve())
+    latest_entry = None
+    latest_mtime = -1
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("projectPath") != project_path:
+            continue
+        mtime = entry.get("fileMtime") or 0
+        try:
+            mtime = float(mtime)
+        except Exception:
+            mtime = 0
+        if mtime > latest_mtime:
+            latest_mtime = mtime
+            latest_entry = entry
+
+    if not latest_entry:
+        return None
+
+    session_id = latest_entry.get("sessionId")
+    full_path = latest_entry.get("fullPath")
+    if full_path:
+        session_path = Path(full_path)
+    elif session_id:
+        session_path = project_dir / f"{session_id}.jsonl"
+    else:
+        return None
+
+    if not session_path.exists():
+        return None
+    return session_path
+
+def _extract_claude_agent_message_from_line(line: str) -> Tuple[Optional[str], Optional[float]]:
+    """Parse a single Claude session log line and return (message, timestamp)."""
+    try:
+        data = json.loads(line)
+    except Exception:
+        return None, None
+
+    if not isinstance(data, dict):
+        return None, None
+    if data.get("type") != "assistant":
+        return None, None
+
+    content = data.get("message", {}).get("content")
+    # Content typically contains a single text item; grab it directly
+    text_item = content[0] if isinstance(content, list) and content else content
+    text_value = (
+        text_item.get("text")
+        if text_item.get("type") == "text"
+        else None
+    )
+
+    text = text_value.strip() if isinstance(text_value, str) else None
+    ts_value = _parse_iso_timestamp(data.get("timestamp"))
+    return (text or None), ts_value
+
+
+def _get_latest_claude_agent_message() -> Optional[str]:
+    """Read the Claude session log for the newest unseen agent message."""
+    session_file = _find_latest_claude_session_file()
+    if not session_file:
+        return None
+
+    try:
+        size = session_file.stat().st_size
+    except OSError:
+        return None
+
+    with _claude_session_lock:
+        state = _claude_session_state
+        if state["path"] != session_file:
+            state.update({"path": session_file, "offset": 0, "last_ts": None, "last_message": None})
+        elif state["offset"] > size:
+            state["offset"] = 0
+
+        offset = state.get("offset", 0) or 0
+        last_ts = state.get("last_ts")
+
+    try:
+        with session_file.open("r", encoding="utf-8") as handle:
+            if offset:
+                handle.seek(offset)
+            lines = handle.readlines()
+            new_offset = handle.tell()
+    except Exception as e:
+        log_message("DEBUG", f"Failed reading Claude session file {session_file}: {e}")
+        return None
+
+    baseline_ts = last_ts if last_ts is not None else _tts_start_time - 1
+    candidates: List[Tuple[float, str]] = []
+
+    for line in lines:
+        message, ts_value = _extract_claude_agent_message_from_line(line)
+        if not message:
+            continue
+        if ts_value is None:
+            ts_value = time.time()
+        if ts_value <= baseline_ts:
+            continue
+        candidates.append((ts_value, message))
+
+    with _claude_session_lock:
+        state = _claude_session_state
+        state["offset"] = new_offset
+
+        if not candidates:
+            return None
+
+        latest_ts, latest_msg = max(candidates, key=lambda item: item[0])
+        state["last_ts"] = latest_ts
+        state["last_message"] = latest_msg
+        return latest_msg
+
+
+def _wait_for_claude_agent_message(max_wait: float = 0.6, interval: float = 0.05) -> Optional[str]:
+    """Poll the Claude session log briefly to catch responses that land slightly after stdout."""
+    deadline = time.time() + max_wait
+    attempt = 0
+    while time.time() <= deadline:
+        message = _get_latest_claude_agent_message()
+        if message:
+            if attempt:
+                log_message("DEBUG", f"Found Claude agent message after retry {attempt}: '{message}'")
+            return message
+        attempt += 1
+        time.sleep(interval)
+    return None
+
 def extract_speakable_text(text: str) -> (str, str):
     """Extract speakable text and convert mathematical symbols."""
 
     text = RE_GREATER_UNDERSCORE.sub('', text)
+    text = RE_UNDERSCORE.sub(' ', text)
 
     # Replace newlines with periods for better speech flow
     text = RE_NEWLINES.sub('. ', text)
+
+    # Drop bracketed spans and line refs like "(file.py:63)" or ":21"
+    text = RE_BRACKETED_TEXT.sub('', text)
+    text = RE_LINE_SPAN.sub('', text)
 
     # Convert function names: underscores to spaces, drop ()
     text = RE_FUNCTION_CALL.sub(lambda m: ' '.join(m.group(0).replace('_', ' ').replace('()', '').split()), text)
@@ -1980,11 +2415,14 @@ def speak_text(text: str, engine: str, needs_skip: bool = False) -> bool:
     if provider:
         try:
             result = provider.speak(text, use_process_control=True, needs_skip=needs_skip)
-            return result
+            if result:
+                return True
+            log_message("WARNING", f"TTS provider '{current_provider}' returned no audio; falling back to system TTS")
         except Exception as e:
             log_message("ERROR", f"TTS provider {current_provider} failed: {e}")
             log_message("ERROR", f"Traceback: {traceback.format_exc()}")
-            return False
+        # Fall back to system TTS if provider fails or returns no audio
+        return speak_with_default(text, engine)
 
     return speak_with_default(text, engine)
 
@@ -2304,10 +2742,36 @@ def queue_for_speech(original_text: str, line_number: Optional[int] = None, sour
     # Log the original text before any filtering
     log_message("INFO", f"queue_for_speech received: '{original_text}' (exception_match={exception_match}, has_constituent_parts={constituent_parts is not None})")
 
-    speakable_text = extract_speakable_text(original_text)
 
-    if not speakable_text or len(speakable_text) < MIN_SPEAK_LENGTH:
-        log_message("INFO", f"Text too short: '{original_text}' -> '{speakable_text}'")
+    agent_message = None
+    active_agent = _get_active_agent_name()
+    if agent_message_only:
+        # Only speak agent messages; original text merely triggers a lookup
+        if active_agent == "codex":
+            agent_message = _wait_for_codex_agent_message(max_wait=0.25)
+            if agent_message:
+                log_message("DEBUG", f"Fetched Codex agent message from session log: '{agent_message}'")
+            else:
+                log_message("INFO", "No Codex agent message found in time; dropping speech for this trigger")
+                return ""
+        elif active_agent == "claude":
+            agent_message = _wait_for_claude_agent_message(max_wait=0.25)
+            if agent_message:
+                log_message("DEBUG", f"Fetched Claude agent message from session log: '{agent_message}'")
+            else:
+                log_message("INFO", "No Claude agent message found in time; dropping speech for this trigger")
+                return ""
+        else:
+            log_message("DEBUG", "TTS_ONLY_AGENT_MESSAGES enabled but active agent is not Codex/Claude; dropping speech")
+            return ""
+        speakable_text = agent_message
+    else:
+        return ""
+
+
+        
+    if not speakable_text or len(speakable_text) < MIN_SPEAK_LENGTH or len(speakable_text) > MAX_SPEAK_LENGTH:
+        log_message("INFO", f"Text too short or too long: '{len(speakable_text)}' -> '{speakable_text}'")
         return ""
     
     # Clean up any awkward punctuation sequences
@@ -3027,6 +3491,7 @@ if __name__ == "__main__":
     elif not sys.stdin.isatty():
         # Read from stdin if piped
         text_to_speak = sys.stdin.read().strip()
+        log_message("DEBUG", f"Read from stdin: {text_to_speak}")
     else:
         # Interactive mode - prompt for input
         print("Interactive TTS mode. Type text and press Enter to speak.")
@@ -3078,6 +3543,7 @@ if __name__ == "__main__":
         start_tts_worker(engine)
         
         # Queue the text for speech
+        log_message("DEBUG", f"Queueing text for speech: {text_to_speak}")
         queue_for_speech(text_to_speak)
         
         # Wait for speech to complete

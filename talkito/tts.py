@@ -45,6 +45,12 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from pathlib import Path
 
+# Suppress deprecation warnings from third-party libraries (torch, misaki, etc.)
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='torch')
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='torch.jit')
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='torch.jit._script')
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='misaki')
+
 from .state import get_shared_state
 
 # Import centralized logging utilities
@@ -432,6 +438,9 @@ def disable_tts_completely(reason: str = None, args: Any = None) -> None:
 def _create_model_instance(provider: str):
     """Create model instance for the specified provider."""
     if provider == 'kokoro':
+        # Enable MPS GPU acceleration for Apple Silicon (M1/M2/M3/M4)
+        os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
+        
         # First check if kokoro module is installed
         try:
             with suppress_ai_warnings():
@@ -625,15 +634,16 @@ def get_cached_local_model(provider: str, timeout: float = 10.0):
 
             # Check if not loading and not cached - this means no one started loading
             if not _local_model_loading:
-                print(f"{provider} model not loaded and no background loading in progress. Starting now...")
+                log_message("INFO", f"{provider} model_not_loaded_and_no_background_loading_in_progress. Starting now...")
                 need_to_preload = True
 
         if need_to_preload:
             preload_local_model(provider)
+            need_to_preload = False
         
         # Check timeout
         if time.time() - start_time > timeout:
-            print(f"Timeout waiting for {provider} model to load after {timeout} seconds")
+            log_message("WARNING", f"Timeout waiting for {provider} model to load after {timeout} seconds")
             return None
         
         time.sleep(0.1)
@@ -1080,7 +1090,9 @@ def suppress_ai_warnings():
         warnings.filterwarnings("ignore", category=DeprecationWarning, module="click")
         warnings.filterwarnings("ignore", category=DeprecationWarning, module="weasel")
         warnings.filterwarnings("ignore", category=UserWarning, module="torch")
+        warnings.filterwarnings("ignore", category=DeprecationWarning, module="torch")
         warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
+        warnings.filterwarnings("ignore", category=DeprecationWarning, module="misaki")
         yield
 
 
@@ -1237,18 +1249,28 @@ def check_tts_provider_accessibility(requested_provider: str = None) -> Dict[str
     kokoro_available = False
     kokoro_note = "High-quality 82M parameter TTS model (no API key required)"
     
-    # For accessibility check, assume kokoro is available if requested
+    # Check if model is cached - this is fast and should always be done
+    from .models import check_model_cached
+    is_cached = check_model_cached('kokoro', 'hexgrad/Kokoro-82M')
+    
+    # For accessibility check, assume kokoro is available if requested OR if cached
     # Actual validation happens during model loading with user consent
     if requested_provider == 'kokoro':
         kokoro_available = True
         kokoro_note = "KokoroTTS package (validation deferred to model loading)"
         log_message("INFO", "KokoroTTS availability assumed for requested provider")
+    elif is_cached:
+        # If cached, we consider it available even if we skip the expensive import check
+        # We assume if it's cached, the user likely has the package installed or will install it
+        kokoro_available = True
+        kokoro_note = "Model cached locally"
+        log_message("INFO", "KokoroTTS considered available (model cached)")
     elif skip_expensive_checks:
         # Skip expensive import when cloud provider is configured
         kokoro_note = "Check skipped (cloud provider configured)"
         log_message("INFO", "KokoroTTS check skipped - cloud provider configured")
     else:
-        # Only do expensive import check if this provider is NOT specifically requested
+        # Only do expensive import check if this provider is NOT specifically requested AND not cached
         try:
             # This import is still expensive but we skip it for the common case
             with suppress_ai_warnings():
@@ -1263,14 +1285,11 @@ def check_tts_provider_accessibility(requested_provider: str = None) -> Dict[str
                 kokoro_note = f"Kokoro package error: {str(e)}"
         log_message("INFO", f"KokoroTTS availability check completed - available: {kokoro_available}")
 
-    # Check if model is cached (only if we did the check)
-    if kokoro_available and not skip_expensive_checks:
-        from .models import check_model_cached
-        is_cached = check_model_cached('kokoro', 'hexgrad/Kokoro-82M')
-        if is_cached:
-            kokoro_note += " [cached]"
-        else:
-            kokoro_note += " [needs download]"
+    # Check/update cache status note
+    if is_cached:
+        kokoro_note += " [cached]"
+    else:
+        kokoro_note += " [needs download]"
 
     accessible["kokoro"] = {
         "available": kokoro_available,
@@ -1476,6 +1495,42 @@ def _write_temp_audio(audio_bytes: bytes, ext: str) -> str:
         f.write(audio_bytes)
     return path
 
+def _sanitize_filename(text: str, max_len: int = 50) -> str:
+    """Sanitize text for use in filename."""
+    # Remove or replace problematic characters
+    import re
+    # Keep only alphanumeric, spaces, and basic punctuation
+    sanitized = re.sub(r'[^\w\s-]', '', text)
+    # Replace whitespace with underscores
+    sanitized = re.sub(r'\s+', '_', sanitized)
+    # Truncate to max length
+    return sanitized[:max_len]
+
+def _save_audio_to_cache(audio_bytes: bytes, ext: str, provider: str, voice: str, text: str) -> Optional[str]:
+    """Save audio to cache directory ~/.talkito_sound/"""
+    try:
+        cache_dir = Path.home() / '.talkito_sound'
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create filename: provider_voice_text.ext
+        text_part = _sanitize_filename(text)
+        voice_part = _sanitize_filename(str(voice) if voice else 'default', max_len=30)
+        provider_part = _sanitize_filename(provider, max_len=20)
+        
+        # Add timestamp to avoid collisions
+        # timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"{provider_part}_{voice_part}_{text_part}{ext}"
+        
+        filepath = cache_dir / filename
+        with open(filepath, 'wb') as f:
+            f.write(audio_bytes)
+        
+        log_message("DEBUG", f"Saved_audio_cache: {filepath}")
+        return str(filepath)
+    except Exception as e:
+        log_message("WARNING", f"Failed to save audio cache: {e}")
+        return None
+
 def synthesize_and_play(synthesize_func, text: str, use_process_control: bool = True, needs_skip: bool = False) -> bool:
     """Synthesize audio via provider function and play it."""
     try:
@@ -1491,6 +1546,12 @@ def synthesize_and_play(synthesize_func, text: str, use_process_control: bool = 
             log_message("ERROR", "No audio returned from synthesizer")
             return False
         tmp_path = _write_temp_audio(audio_bytes, ext)
+        
+        # Save to cache directory
+        config = get_tts_config()
+        provider = config.get('provider', 'unknown')
+        voice = config.get('voice', 'default')
+        _save_audio_to_cache(audio_bytes, ext, provider, voice, text)
 
         if needs_skip:
             # Capture old thread before signaling skip
@@ -1604,8 +1665,38 @@ class TTSProvider(ABC):
         """Synthesize speech from text, return (audio bytes, format) or None."""
         pass
     
+    def get_config_summary(self) -> str:
+        """Get a summary of all provider configuration for logging."""
+        config_parts = [f"provider={self.provider_name}"]
+        
+        # Get common config values
+        voice = self.get_config_value('voice')
+        language = self.get_config_value('language')
+        region = self.get_config_value('region')
+        model = self.get_config_value('model')
+        rate = self.get_config_value('rate')
+        pitch = self.get_config_value('pitch')
+        
+        if voice:
+            config_parts.append(f"voice={voice}")
+        if language:
+            config_parts.append(f"language={language}")
+        if region:
+            config_parts.append(f"region={region}")
+        if model:
+            config_parts.append(f"model={model}")
+        if rate is not None:
+            config_parts.append(f"rate={rate}")
+        if pitch is not None:
+            config_parts.append(f"pitch={pitch}")
+        
+        return ", ".join(config_parts)
+    
     def speak(self, text: str, use_process_control: bool = True, needs_skip: bool = False) -> bool:
         """Synthesize and play audio, return True if successful."""
+        config_summary = self.get_config_summary()
+        text_preview = text[:100] + '...' if len(text) > 100 else text
+        log_message("INFO", f"TTS_Synthesizing_with_{config_summary}: '{text_preview}'")
         return synthesize_and_play(self.synthesize, text, use_process_control, needs_skip)
     
     def get_config_value(self, key: str, default: Any = None) -> Any:
@@ -1767,13 +1858,16 @@ class ElevenLabsProvider(TTSProvider):
         
         # list_model=Request("https://api.elevenlabs.io/v1/models", headers=headers)
     
+        # Get configurable rate (ElevenLabs speed range: 0.5 to 2.0, default 0.8)
+        rate = self.get_config_value('rate', 0.8)
+        
         data = {
             'text': text,
             'model_id': 'eleven_v3', # eleven_multilingual_v2
             'voice_settings': {
                 'stability': 0.5,
                 'similarity_boost': 0.5,
-                'speed': 0.8
+                'speed': rate
             }
         }
 
@@ -1791,10 +1885,10 @@ class ElevenLabsProvider(TTSProvider):
                 pass
             status = getattr(e, "code", "unknown")
             log_message("ERROR", f"ElevenLabs HTTP error {status}: {error_body}")
-            return None
+            return None, None
         except Exception as e:
             log_message("ERROR", f"ElevenLabs request failed: {e}")
-            return None
+            return None, None
 
 
 class DeepgramProvider(TTSProvider):
@@ -1843,7 +1937,14 @@ class KittenTTSProvider(TTSProvider):
             m = get_cached_local_model('kittentts', timeout=10.0)
             if m is None:
                 raise RuntimeError("KittenTTS model unavailable")
-            audio = m.generate(text, voice=self.get_config_value('voice', kittentts_voice))
+            
+            voice = self.get_config_value('voice', kittentts_voice)
+            valid_voices = get_all_voices_for_provider('kittentts')
+            if voice and voice not in valid_voices:
+                log_message("WARNING", f"Voice '{voice}' is not valid for KittenTTS. Falling back to default.")
+                voice = kittentts_voice
+                
+            audio = m.generate(text, voice=voice)
             buf = io.BytesIO()
             sf.write(buf, audio, 24000, format='WAV')
             return buf.getvalue(), ".wav"
@@ -1858,7 +1959,16 @@ class KokoroTTSProvider(TTSProvider):
         try:
             # Get configuration from shared state
             config = get_tts_config()
-            voice = config.get('voice') or kokoro_voice
+            # print(f"[TTS] Using config: {config}")
+            voice = config.get('voice') 
+            
+            # Helper to check if voice is valid for kokoro
+            valid_voices = get_all_voices_for_provider('kokoro')
+            if voice and voice not in valid_voices:
+                log_message("WARNING", f"Voice '{voice}' is not valid for Kokoro. Falling back to default.")
+                voice = None
+                
+            voice = voice or kokoro_voice
             speed = float(config.get('speed') or kokoro_speed)
             pipeline = get_cached_local_model('kokoro', timeout=10.0)
 
@@ -1911,6 +2021,80 @@ def create_tts_provider(provider_name: str, config: Optional[Dict[str, Any]] = N
     if provider_class:
         return provider_class(config)
     return None
+
+
+def switch_tts_provider(provider: str, voice: str = None, language: str = None, 
+                        rate: float = None, preload: bool = True) -> bool:
+    """Switch to a different TTS provider, updating shared state properly.
+    
+    This mirrors the logic from _change_tts_internal in mcp.py to ensure
+    that provider switches (including fallbacks) are handled consistently.
+    
+    Args:
+        provider: Target provider name (e.g., 'kokoro', 'system')
+        voice: Voice to use (uses provider default if None)
+        language: Language code (uses provider default if None)
+        rate: Speech rate (uses provider default if None)
+        preload: Whether to preload local models (True by default)
+        
+    Returns:
+        True if switch was successful, False otherwise
+    """
+    from .state import set_tts_config_thread_safe
+    
+    try:
+        # Get provider-specific defaults
+        defaults = {}
+        if provider in ('aws', 'polly'):
+            defaults['voice'] = polly_voice
+            defaults['region'] = polly_region
+        elif provider == 'openai':
+            defaults['voice'] = openai_voice
+        elif provider == 'azure':
+            defaults['voice'] = azure_voice
+            defaults['region'] = azure_region
+        elif provider == 'gcloud':
+            defaults['voice'] = gcloud_voice
+            defaults['language'] = gcloud_language_code
+        elif provider == 'elevenlabs':
+            defaults['voice'] = elevenlabs_voice_id
+            defaults['rate'] = 0.8  # ElevenLabs speed default
+        elif provider == 'deepgram':
+            defaults['voice'] = deepgram_voice_model
+        elif provider == 'kittentts':
+            defaults['voice'] = kittentts_voice
+        elif provider == 'kokoro':
+            defaults['voice'] = kokoro_voice
+            defaults['language'] = kokoro_language
+            defaults['rate'] = float(kokoro_speed)
+        
+        # Use provided values or fall back to defaults
+        final_voice = voice or defaults.get('voice')
+        final_language = language or defaults.get('language')
+        final_rate = rate if rate is not None else defaults.get('rate')
+        final_region = defaults.get('region')
+        
+        # Update shared state
+        set_tts_config_thread_safe(
+            provider=provider,
+            voice=final_voice,
+            region=final_region,
+            language=final_language,
+            rate=final_rate
+        )
+        
+        log_message("INFO", f"Switched TTS provider to {provider} (voice={final_voice})")
+        
+        # Preload local models if requested
+        if preload and provider in ['kittentts', 'kokoro']:
+            log_message("INFO", f"Preloading {provider} model after switch...")
+            preload_local_model(provider)
+        
+        return True
+        
+    except Exception as e:
+        log_message("ERROR", f"Failed to switch TTS provider to {provider}: {e}")
+        return False
 
 
 # Add 'polly' as an alias for 'aws' for backward compatibility
@@ -2483,7 +2667,45 @@ def speak_text(text: str, engine: str, needs_skip: bool = False) -> bool:
         except Exception as e:
             log_message("ERROR", f"TTS provider {current_provider} failed: {e}")
             log_message("ERROR", f"Traceback: {traceback.format_exc()}")
-        # Fall back to system TTS if provider fails or returns no audio
+        
+        # Fallback strategy: Try Kokoro if available and we aren't already using it
+        # This is a TEMPORARY fallback - we don't update shared state so the 
+        # primary provider (e.g., ElevenLabs) is tried first on the next call
+        if current_provider != 'kokoro':
+            try:
+                # Check if Kokoro is cached/available
+                from .models import check_model_cached
+                is_cached = check_model_cached('kokoro', 'hexgrad/Kokoro-82M')
+                log_message("DEBUG", f"Checking Kokoro fallback: cached={is_cached}")
+                
+                if is_cached:
+                    log_message("INFO", f"Falling back to Kokoro TTS (temporary, not persisted)...")
+                    # Create provider with explicit config - DON'T use switch_tts_provider
+                    # to keep the fallback temporary
+                    fallback_config = {
+                        'provider': 'kokoro',
+                        'voice': 'af_heart',
+                        'language': 'a',
+                        'rate': 1.0
+                    }
+                    fallback_provider = create_tts_provider('kokoro', fallback_config)
+                    if fallback_provider:
+                        try:
+                            log_message("DEBUG", "Attempting Kokoro speech...")
+                            result = fallback_provider.speak(text, use_process_control=True, needs_skip=needs_skip)
+                            if result:
+                                log_message("INFO", "Fallback to Kokoro successful")
+                                return True
+                            else:
+                                log_message("WARNING", "Kokoro fallback returned False")
+                        except Exception as k_err:
+                            log_message("WARNING", f"Fallback to Kokoro failed: {k_err}")
+                            log_message("DEBUG", traceback.format_exc())
+            except Exception as fb_err:
+                 log_message("WARNING", f"Error checking fallback provider: {fb_err}")
+
+        # Ultimate fallback to system TTS if both primary and Kokoro fail
+        log_message("INFO", "Falling back to system TTS")
         return speak_with_default(text, engine)
 
     return speak_with_default(text, engine)

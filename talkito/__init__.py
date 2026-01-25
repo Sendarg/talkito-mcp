@@ -30,6 +30,10 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="click")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="weasel")
 warnings.filterwarnings("ignore", category=UserWarning, module="torch")
 warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='torch')
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='torch.jit')
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='torch.jit._script')
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="misaki")
 
 from . import asr, comms, profiles, tts
 

@@ -820,6 +820,7 @@ async def _change_tts_internal(provider: str = "system", voice: str = None, regi
                 defaults['language'] = tts.gcloud_language_code
             elif name == 'elevenlabs':
                 defaults['voice'] = tts.elevenlabs_voice_id
+                defaults['rate'] = 0.8  # ElevenLabs speed default
             elif name == 'deepgram':
                 defaults['voice'] = tts.deepgram_voice_model
             elif name == 'kittentts':
@@ -3297,8 +3298,8 @@ def main():
         
         state.set_tts_config(provider=selected_tts,voice="BpjGufoPiobT79j2vtj4") # for mcp special voice       
         # Verify state content immediately
-        log_message("INFO", f"Startup DEBUG: Verified state provider={state.tts_provider} voice={state.tts_voice}")
-        log_message("INFO", f"Startup DEBUG: selected_tts_completed: {selected_tts}")
+        tts_state=f"provider={state.tts_provider},voice={state.tts_voice},model={state.tts_model}"
+        log_message("INFO", f"Startup DEBUG: selected_tts_completed: {tts_state}")
 
         
         # Start TTS worker to ensure queue processing

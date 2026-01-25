@@ -3614,18 +3614,18 @@ async def run_with_talkito(command: List[str], args) -> int:
         # For system/auto, get the actual engine being used
         tts_provider = engine if engine != 'cloud' else getattr(tts, 'tts_provider', 'system')
 
-    asr.configure_asr_from_args(args)
-
     log_message("DEBUG", "set_tts_initialized")
     shared_state.set_tts_initialized(True, tts_provider)
-    
+
+    # Only configure ASR if not disabled - this saves ~2s on startup
     if shared_state.asr_mode != 'off':
+        asr.configure_asr_from_args(args)
         # Enable ASR in shared state - centralized functions will handle initialization
         log_message("INFO", f"Enabling ASR for {shared_state.asr_mode} mode")
         shared_state.set_asr_enabled(True)
     else:
         # Explicitly disable ASR when mode is 'off'
-        log_message("INFO", "Disabling ASR due to --asr-mode off")
+        log_message("INFO", "Disabling ASR due to --asr-mode off (skipping ASR configuration)")
         shared_state.set_asr_enabled(False)
     
     # Set up communications if configured

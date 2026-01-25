@@ -170,17 +170,19 @@ def update_claude_hooks(webhook_port=8080):
 
 
 def create_talkito_env():
-    """Create .talkito.env template in current directory"""
-    talkito_env_path = Path(".talkito.env")
+    """Create .talkito.env template in home directory if no env file exists"""
+    cwd_env_path = Path(".talkito.env")
+    home_env_path = Path.home() / ".talkito.env"
     
-    # Skip if .talkito.env already exists
-    if talkito_env_path.exists():
+    # Skip if .talkito.env exists in either location
+    if cwd_env_path.exists() or home_env_path.exists():
         return True
     
-    with open(talkito_env_path, 'w') as f:
+    # Create in home directory
+    with open(home_env_path, 'w') as f:
         f.write(ENV_EXAMPLE_TEMPLATE)
     
-    print("Created .talkito.env (copy settings to .env as needed)")
+    print(f"Created ~/.talkito.env template")
     return True
 
 
@@ -517,13 +519,15 @@ async def run_terminal_agent_extensions(args) -> int:
 
         # may be for mcp server, but I use them independently. the MCP server have a api_server 8001 already for mcp.
         # only claude need a api_server for PreToolUse hook….
-        # if args.command == 'claude':
-        #     args = run_api_server(args)
-
         # Start the MCP server thread
         if mcp_enabled:
             log_message("INFO", "About to start MCP server thread")
             server_thread = threading.Thread(target=run_mcp_server, daemon=True)
+            
+            # Start API server for Claude hooks if needed
+            if args.command == 'claude':
+                args = run_api_server(args)
+                
             thread_start_time = time.time()
             server_thread.start()
             log_message("INFO", f"MCP server thread started [{time.time() - thread_start_time:.3f}s]")

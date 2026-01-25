@@ -1096,6 +1096,31 @@ def check_tts_provider_accessibility(requested_provider: str = None) -> Dict[str
     
     accessible = {}
     
+    # Define provider categories for optimization
+    # Skip expensive local provider imports when a cloud provider is configured
+    cloud_providers = {'openai', 'elevenlabs', 'deepgram', 'gcloud', 'azure', 'aws', 'polly'}
+    expensive_local_providers = {'kokoro', 'kittentts'}
+    
+    # Determine if we should skip expensive checks
+    # Skip if: (1) cloud provider is requested, OR (2) cloud provider has API key configured
+    skip_expensive_checks = False
+    if requested_provider and requested_provider in cloud_providers:
+        skip_expensive_checks = True
+        log_message("INFO", f"Skipping expensive local TTS checks - cloud provider '{requested_provider}' requested")
+    elif not requested_provider or requested_provider not in expensive_local_providers:
+        # Check if any cloud provider has credentials configured
+        has_cloud_credentials = (
+            os.environ.get("OPENAI_API_KEY") or
+            os.environ.get("ELEVENLABS_API_KEY") or
+            os.environ.get("DEEPGRAM_API_KEY") or
+            (os.environ.get("AZURE_SPEECH_KEY") and os.environ.get("AZURE_SPEECH_REGION")) or
+            os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or
+            os.environ.get("GCLOUD_SERVICE_ACCOUNT_JSON")
+        )
+        if has_cloud_credentials:
+            skip_expensive_checks = True
+            log_message("INFO", "Skipping expensive local TTS checks - cloud credentials detected")
+    
     # System TTS
     detected_engine = detect_tts_engine()
     log_message("INFO", f"System TTS detection completed - detected: {detected_engine}")
@@ -1120,18 +1145,24 @@ def check_tts_provider_accessibility(requested_provider: str = None) -> Dict[str
     # Amazon Polly - Check using boto3's credential chain
     polly_available = False
     polly_note = "Requires AWS credentials (env vars, ~/.aws/credentials, or IAM role)"
-    try:
-        import boto3
-        # Try to create a session to check if credentials are available
-        session = boto3.Session()
-        credentials = session.get_credentials()
-        if credentials is not None:
-            polly_available = True
-            polly_note = "AWS credentials detected"
-    except ImportError:
-        polly_note = "Requires boto3 package (pip install boto3)"
-    except Exception:
-        pass
+    
+    # Skip boto3 import if we're using a different cloud provider (boto3 import is slow)
+    if skip_expensive_checks and requested_provider not in ('aws', 'polly'):
+        polly_note = "Check skipped (other cloud provider configured)"
+        log_message("INFO", "Skipping boto3 import - other cloud provider configured")
+    else:
+        try:
+            import boto3
+            # Try to create a session to check if credentials are available
+            session = boto3.Session()
+            credentials = session.get_credentials()
+            if credentials is not None:
+                polly_available = True
+                polly_note = "AWS credentials detected"
+        except ImportError:
+            polly_note = "Requires boto3 package (pip install boto3)"
+        except Exception:
+            pass
     
     accessible["aws"] = {
         "available": polly_available,
@@ -1173,6 +1204,9 @@ def check_tts_provider_accessibility(requested_provider: str = None) -> Dict[str
     if requested_provider == 'kittentts':
         kittentts_available = True
         kittentts_note = "KittenTTS package (validation deferred to model loading)"
+    elif skip_expensive_checks:
+        # Skip expensive import when cloud provider is configured
+        kittentts_note = "Check skipped (cloud provider configured)"
     else:
         # Only do expensive import check if this provider is NOT specifically requested
         try:
@@ -1184,8 +1218,8 @@ def check_tts_provider_accessibility(requested_provider: str = None) -> Dict[str
             install_cmd = TTS_PROVIDERS['kittentts']['install']
             kittentts_note = f"Requires KittenTTS package ({install_cmd})"
     
-    # Check if model is cached
-    if kittentts_available:
+    # Check if model is cached (only if we did the check)
+    if kittentts_available and not skip_expensive_checks:
         from .models import check_model_cached
         is_cached = check_model_cached('kittentts', kittentts_model)
         if is_cached:
@@ -1209,6 +1243,10 @@ def check_tts_provider_accessibility(requested_provider: str = None) -> Dict[str
         kokoro_available = True
         kokoro_note = "KokoroTTS package (validation deferred to model loading)"
         log_message("INFO", "KokoroTTS availability assumed for requested provider")
+    elif skip_expensive_checks:
+        # Skip expensive import when cloud provider is configured
+        kokoro_note = "Check skipped (cloud provider configured)"
+        log_message("INFO", "KokoroTTS check skipped - cloud provider configured")
     else:
         # Only do expensive import check if this provider is NOT specifically requested
         try:
@@ -1225,8 +1263,8 @@ def check_tts_provider_accessibility(requested_provider: str = None) -> Dict[str
                 kokoro_note = f"Kokoro package error: {str(e)}"
         log_message("INFO", f"KokoroTTS availability check completed - available: {kokoro_available}")
 
-    # Check if model is cached
-    if kokoro_available:
+    # Check if model is cached (only if we did the check)
+    if kokoro_available and not skip_expensive_checks:
         from .models import check_model_cached
         is_cached = check_model_cached('kokoro', 'hexgrad/Kokoro-82M')
         if is_cached:
@@ -1507,7 +1545,9 @@ def validate_provider_config(provider: str, silent: bool = False) -> bool:
 
     # Check environment variable if required
     env_var = provider_info.get('env_var')
-    if env_var and not os.environ.get(env_var):
+    env_value = os.environ.get(env_var) if env_var else None
+    if env_var and not env_value:
+        log_message("DEBUG", f"validate_provider_config: provider={provider} missing env_var={env_var}")
         if not silent:
             print(f"Error: {env_var} environment variable not set")
             print(f"Please set it with: export {env_var}='your-api-key'")
@@ -3251,16 +3291,20 @@ def select_best_tts_provider(excluded_providers=None) -> str | None:
 
     preferred = state_provider or os.environ.get('TALKITO_PREFERRED_TTS_PROVIDER')
 
-    accessible = check_tts_provider_accessibility(requested_provider=preferred)
-
-    # Check if preferred provider is accessible, properly configured, and not excluded
-    if preferred and preferred in accessible and accessible[preferred]['available'] and preferred not in excluded_providers:
-        if validate_provider_config(preferred):
-            log_message("INFO", f"Using preferred TTS provider: {preferred}")
+    # FAST PATH: If we have a preferred provider, validate ONLY that one
+    # Skip the expensive full provider accessibility check
+    if preferred and preferred not in excluded_providers:
+        log_message("INFO", f"Fast-path validation for preferred provider: {preferred}")
+        if validate_provider_config(preferred, silent=True):
+            log_message("INFO", f"Using preferred TTS provider: {preferred} (fast-path)")
             return preferred
         else:
+            log_message("WARNING", f"Preferred TTS provider {preferred} failed validation, falling back to full search")
             print(f"Warning: Preferred TTS provider '{preferred}' is not properly configured. Searching for alternatives...")
-            log_message("WARNING", f"Preferred TTS provider {preferred} failed validation, searching for alternatives")
+
+    # SLOW PATH: Full provider search only when no preferred provider or it failed
+    log_message("INFO", "Full provider accessibility check starting...")
+    accessible = check_tts_provider_accessibility(requested_provider=preferred)
     
     # Define preference order for providers (prioritize specific API keys over general cloud credentials)
     priority_order = [

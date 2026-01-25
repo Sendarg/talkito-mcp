@@ -94,9 +94,9 @@ def unset_key(path: str, key: str) -> tuple[str, None, bool]:
     return set_key(path, key, None)
 
 
-# Load environment configuration on module import
-load_dotenv()
-load_dotenv('.talkito.env')
+# Load .talkito.env - try current directory first, then home directory
+if not load_dotenv('.talkito.env'):
+    load_dotenv(str(Path.home() / '.talkito.env'))
 
 
 def _import_asr():

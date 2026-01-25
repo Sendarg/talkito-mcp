@@ -125,8 +125,10 @@ import pyaudio
 from .logs import log_message as _base_log_message
 from .state import load_dotenv
 
-load_dotenv()
-load_dotenv('.talkito.env')
+# Load .talkito.env - try current directory first, then home directory
+if not load_dotenv('.talkito.env'):
+    from pathlib import Path
+    load_dotenv(str(Path.home() / '.talkito.env'))
 
 SQUARE_BRACKETS_CLEANER = re.compile(r'\[.*?\]')
 

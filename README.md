@@ -19,6 +19,7 @@ TalkiTo lets developers talk, slack and whatsapp with Claude Code and OpenAI Cod
     ```bash
     talkito --mcp-server --port=8000
     ```
+*   **Global Configuration**: Settings are now persisted globally in your home directory (`~/.talkito.json`), so your preferences survive updates and restarts.
 *   **Robust TTS Fallback**: Smart fallback system (with Kokoro TTS) ensures you never lose speech capabilities.
 *   **Per-Agent Voice Config**: Configure different voices for different agents (Claude, Codex, etc.).
 

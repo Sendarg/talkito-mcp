@@ -11,6 +11,17 @@
 
 TalkiTo lets developers talk, slack and whatsapp with Claude Code and OpenAI Codex. It can be used as a command-line tool, a web extension, and as a Python library.
 
+## 🌟 What's New (v0.3.0)
+
+*   **Full Context Reading**: Now reads complete agent responses directly from session history logs instead of relying on truncated terminal output, ensuring no information is missed.
+*   **Performance Boost**: Startup time reduced by **90%** (starts in ~2 seconds) thanks to lazy-loading and optimization.
+*   **Ready for MCP**: Full independent MCP server support. Run it standalone:
+    ```bash
+    talkito --mcp-server --port=8000
+    ```
+*   **Robust TTS Fallback**: Smart fallback system (with Kokoro TTS) ensures you never lose speech capabilities.
+*   **Per-Agent Voice Config**: Configure different voices for different agents (Claude, Codex, etc.).
+
 ## 🚀 Quick Install
 
 ### Option 1: One-liner Install Script (Recommended)
@@ -105,7 +116,7 @@ run `talkito codex`
 
 ### Run as an MCP server
 
-run `talkito --mcp-server`
+run `talkito --mcp-server --port=8000`
 
 ### Run the TalkiTo configuration menu
 

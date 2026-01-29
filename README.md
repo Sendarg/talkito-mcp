@@ -1,361 +1,308 @@
-# TalkiTo
+# TalkiTo - Voice-Enabled AI Development
 
 <div align="center">
 
-[![GitHub Stars](https://img.shields.io/github/stars/robdmac/talkito?style=social)](https://github.com/robdmac/talkito/stargazers)
-[![GitHub Forks](https://img.shields.io/github/forks/robdmac/talkito?style=social)](https://github.com/robdmac/talkito/network/members)
-[![License](https://img.shields.io/badge/License-AGPL%20v3-blue.svg?style=flat-square)](https://github.com/robdmac/talkito/blob/main/LICENSE)
-[![Discord](https://img.shields.io/discord/1420523410513072198?style=flat-square&logo=discord&logoColor=white)](https://discord.gg/WbP58Tym)
+[![GitHub Stars](https://img.shields.io/github/stars/Sendarg/talkito-mcp?style=social)](https://github.com/Sendarg/talkito-mcp/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/Sendarg/talkito-mcp?style=social)](https://github.com/Sendarg/talkito-mcp/network/members)
+[![License](https://img.shields.io/badge/License-AGPL%20v3-blue.svg?style=flat-square)](https://github.com/Sendarg/talkito-mcp/blob/main/LICENSE)
+[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square)](https://www.python.org/downloads/)
+
+**Transform your AI coding experience with voice interaction**
+
+> 🔀 **Forked from [robdmac/talkito](https://github.com/robdmac/talkito)**
+
+[Quick Start](#-quick-start) • [Features](#-key-features) • [Configuration](#-configuration) • [Demo](#-demo)
 
 </div>
 
-TalkiTo lets developers talk, slack and whatsapp with Claude Code and OpenAI Codex. It can be used as a command-line tool, a web extension, and as a Python library.
+---
 
-## 🌟 What's New (v0.3.0)
+## 🎯 What is TalkiTo?
 
-*   **Full Context Reading**: Now reads complete agent responses directly from session history logs instead of relying on truncated terminal output, ensuring no information is missed.
-*   **Performance Boost**: Startup time reduced by **90%** (starts in ~2 seconds) thanks to lazy-loading and optimization.
-*   **Ready for MCP**: Full independent MCP server support. Run it standalone:
-    ```bash
-    talkito --mcp-server --port=8000
-    ```
-*   **Global Configuration**: Settings are now persisted globally in your home directory (`~/.talkito.json`), so your preferences survive updates and restarts.
-*   **Robust TTS Fallback**: Smart fallback system (with Kokoro TTS) ensures you never lose speech capabilities.
-*   **Per-Agent Voice Config**: Configure different voices for different agents (Claude, Codex, etc.).
+TalkiTo brings natural speech capabilities to AI development tools. Talk to Claude Code, OpenAI Codex, and other AI assistants using your voice, and receive spoken responses in real-time.
 
-## 🚀 Quick Install
+**Use Cases:**
+- 🗣️ **Hands-free coding** - Code while away from keyboard
+- 🔊 **Accessibility** - Make AI tools accessible to everyone
+- 📱 **Remote monitoring** - Get notifications via WhatsApp/Slack/SMS
+- 🎙️ **Voice-first workflows** - Natural conversation with AI assistants
 
-### Option 1: One-liner Install Script (Recommended)
+---
+
+## ✨ Key Features
+
+- **90% faster startup** - Launches in ~2 seconds with lazy-loading optimization
+- **Full context reading** - Reads complete agent responses from session history logs
+- **Smart TTS fallback** - Automatic fallback to Kokoro TTS ensures uninterrupted speech
+- **Audio caching** - Intelligent caching reduces latency and API costs
+- **Multiple providers** - OpenAI, AWS Polly, Azure, Google Cloud, ElevenLabs, Deepgram, Kokoro, KittenTTS
+- **Per-agent voice config** - Different voices for different AI assistants
+- **MCP Server support** - Run as standalone Model Context Protocol server
+- **Global configuration** - Settings persist in `~/.talkito.json`
+
+---
+
+## 🚀 Quick Start
+
+### One-Line Installation
+
 ```bash
-curl -sSL https://raw.githubusercontent.com/robdmac/talkito/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/Sendarg/talkito-mcp/main/install.sh | bash
 ```
 
-### Option 2: PyPI
+### Or Install via PyPI
+
 ```bash
 pip install talkito
 ```
 
-Then just run:
+### Launch with Claude Code
+
 ```bash
 talkito claude
 ```
 
-## Install for End Users
+---
 
-### From Source (Stable)
+## 📦 Installation
+
+### From Source
+
 ```bash
-# Clone the repository
-git clone https://github.com/robdmac/talkito.git
-cd talkito
+# Clone repository
+git clone https://github.com/Sendarg/talkito-mcp.git
+cd talkito-mcp
 
-# Create and activate virtual environment (recommended)
+# Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
 
 # Install system dependencies (macOS)
 brew install portaudio
 
-# Install package (normal install - gets updates via git pull)
-pip install .
+# Install TalkiTo
+pip install .  # or pip install -e . for development
 
-# Run this in a directory you want to use claude with
+# Run
 talkito claude
 ```
 
-## Install for Developers
+### System Dependencies
 
-### Editable Install (Development)
+**macOS:**
 ```bash
-# Clone the repository
-git clone https://github.com/robdmac/talkito.git
-cd talkito
-
-# Create and activate virtual environment (recommended)
-python3 -m venv venv
-source venv/bin/activate
-
-# Install system dependencies (macOS)
 brew install portaudio
-
-# Install in development mode (editable install)
-pip install -e .
-
-# Run this in a directory you want to use claude with
-talkito claude
 ```
 
-or for the web extension run as
-```commandline
-talkito --mcp-sse-server
+**Ubuntu/Debian:**
+```bash
+sudo apt-get install portaudio19-dev python3-pyaudio espeak
 ```
-then go to chrome://extensions/ and load unpacked the extensions/chrome/ dir
 
-## Demo Video
+---
 
-[![TalkiTo Demo](https://img.youtube.com/vi/dliBN7pNAuw/0.jpg)](https://youtu.be/dliBN7pNAuw)
+## 🎮 Usage
 
-## AI Assistant Compatibility
-
-| AI Assistant    | Method        | Status              |
-|-----------------|---------------|---------------------|
-| **Claude Code** | Terminal      | **Fully Supported** |
-| **Codex Cli**   | Terminal      | **Fully Supported** |
-| bolt.new        | Web Extension | Output Only         |
-| v0.dev          | Web Extension | Output Only         |
-| replit.com      | Web Extension | Output Only         |
-| Other agents    | Terminal      | In Progress         |
-
-
-
-### Run with Claude Code
-
-run `talkito claude`
-
-### Run with Codex Cli
-
-run `talkito codex`
-
-### Run as an MCP server
-
-run `talkito --mcp-server --port=8000`
-
-### Run the TalkiTo configuration menu
-
-run `talkito`
-
-#### Advanced Options
+### Basic Commands
 
 ```bash
-# Disable auto-skip to newer content (auto-skip is on by default)
-talkito --dont-auto-skip-tts claude
+# Launch with Claude Code
+talkito claude
 
+# Launch with Codex CLI
+talkito codex
+
+# Run as MCP server
+talkito --mcp-server --port=8000
+
+# Run configuration menu
+talkito
+```
+
+### TTS Configuration
+
+```bash
 # Use different TTS providers
-talkito --tts-provider polly --tts-voice Matthew --tts-region us-west-2 echo "Hello with AWS"
-talkito --tts-provider azure --tts-voice en-US-JennyNeural echo "Hello with Azure"
-talkito --tts-provider gcloud --tts-voice en-US-Journey-F echo "Hello with Google"
-talkito --tts-provider kittentts --tts-voice expr-voice-3-f echo "Hello with KittenTTS"
-talkito --tts-provider kokoro --tts-voice af_heart echo "Hello with Kokoro (local)"
+talkito --tts-provider openai --tts-voice nova claude
+talkito --tts-provider kokoro --tts-voice af_heart claude
+talkito --tts-provider azure --tts-voice en-US-JennyNeural claude
 
+# Disable auto-skip
+talkito --dont-auto-skip-tts claude
+```
+
+### ASR Configuration
+
+```bash
 # Use different ASR providers
 talkito --asr-provider gcloud --asr-language en-US claude
-AZURE_SPEECH_KEY=... AZURE_SPEECH_REGION=eastus talkito --asr-provider azure claude
-WHISPER_MODEL=small WHISPER_COMPUTE_TYPE=int8 talkito --asr-provider local_whisper claude
-talkito --asr-language es-ES echo "Hola mundo"  # Spanish recognition
+talkito --asr-provider local_whisper claude
 
-# Enable remote communication (configure via environment variables)
-talkito --slack-channel '#alerts' python manage.py runserver
-talkito --whatsapp-recipients +1234567890 long-running-command
-talkito --sms-recipients +1234567890,+0987654321 server-monitor.sh
+# Configure Whisper
+WHISPER_MODEL=small WHISPER_COMPUTE_TYPE=int8 talkito --asr-provider local_whisper claude
 ```
 
-### Using tts.py (Standalone TTS)
+---
 
-The TTS module can be used independently for text-to-speech operations:
+## 🔧 Configuration
+
+### Environment Files
+
+```bash
+# Copy example configuration
+cp .env.example .env
+
+# Edit with your API keys
+nano .env
+```
+
+TalkiTo supports `.env` (primary) and `.talkito.env` (secondary) files.
+
+### Global Configuration
+
+Settings persist in `~/.talkito.json`:
+
+```json
+{
+  "tts_provider": "kokoro",
+  "tts_voice": "af_heart",
+  "asr_provider": "google",
+  "asr_language": "en-US",
+  "auto_skip": true
+}
+```
+
+---
+
+## 🎙️ Provider Setup
+
+### TTS Providers (Quick Reference)
+
+| Provider | Setup | Cost | Quality |
+|----------|-------|------|---------|
+| **System** | No setup | Free | Basic |
+| **Kokoro** | `pip install 'kokoro>=0.9.4' soundfile phonemizer` | Free (local) | High |
+| **OpenAI** | `export OPENAI_API_KEY="sk-..."` | $0.015/1K chars | High |
+| **AWS Polly** | AWS credentials | $4/1M chars | High |
+| **Azure** | `export AZURE_SPEECH_KEY="..."` | $15/1M chars | Very High |
+| **Google Cloud** | Service account JSON | $16/1M chars | Very High |
+
+#### Recommended: Kokoro (Local, Privacy-First)
+
+```bash
+pip install 'kokoro>=0.9.4' soundfile phonemizer
+talkito --tts-provider kokoro --tts-voice af_heart claude
+```
+- No API key required
+- Runs completely offline
+- High quality multilingual voices
+
+#### OpenAI TTS
+
+```bash
+export OPENAI_API_KEY="sk-..."
+talkito --tts-provider openai --tts-voice nova claude
+```
+- Voices: alloy, echo, fable, onyx, nova, shimmer
+- Get API Key: https://platform.openai.com/api-keys
+
+### ASR Providers (Quick Reference)
+
+| Provider | Setup | Cost | Quality |
+|----------|-------|------|---------|
+| **Google** | No setup | Free | Good |
+| **Local Whisper** | `pip install faster-whisper` | Free (local) | Excellent |
+| **Google Cloud** | Service account JSON | $0.006/15s | Excellent |
+| **Azure** | `export AZURE_SPEECH_KEY="..."` | $1/hour | Excellent |
+
+#### Recommended: Local Whisper (Privacy-First)
+
+```bash
+pip install faster-whisper
+WHISPER_MODEL=small WHISPER_COMPUTE_TYPE=int8 talkito --asr-provider local_whisper claude
+```
+- No API key required
+- Runs completely offline
+- Excellent accuracy
+
+---
+
+## 🤖 AI Assistant Compatibility
+
+| AI Assistant | Method | Status | Voice I/O |
+|--------------|--------|--------|-----------|
+| **Claude Code** | Terminal | ✅ Fully Supported | ✅ / ✅ |
+| **Codex CLI** | Terminal | ✅ Fully Supported | ✅ / ✅ |
+| bolt.new | Web Extension | ⚠️ Output Only | ❌ / ✅ |
+| v0.dev | Web Extension | ⚠️ Output Only | ❌ / ✅ |
+
+---
+
+## 🆕 What's New in v0.3.0
+
+### Performance
+- **90% faster startup** - Reduced from 20+ seconds to ~2 seconds
+- **Lazy loading** - TTS/ASR providers load only when needed
+- **Audio caching** - Intelligent caching reduces API calls
+
+### Reliability
+- **Full context reading** - Reads complete agent responses from session history logs
+- **Smart TTS fallback** - Automatic fallback to Kokoro TTS
+- **Robust error handling** - Better recovery from provider failures
+
+### Features
+- **MCP Server support** - Run as standalone Model Context Protocol server
+- **Global configuration** - Settings persist in `~/.talkito.json`
+- **Per-agent voice config** - Different voices for different AI assistants
+
+---
+
+## 📚 Standalone Module Usage
+
+### TTS Module
 
 ```python
-#!/usr/bin/env python3
 import tts
 
-# Initialize TTS
 engine = tts.detect_tts_engine()
 tts.start_tts_worker(engine)
+tts.queue_for_speech("Hello from TTS!")
 
-# Speak text
-tts.queue_for_speech("Hello from the TTS module!")
-
-# Wait and cleanup
 import time
 time.sleep(2)
 tts.shutdown_tts()
 ```
 
-### Using asr.py (Standalone ASR)
-
-The ASR module can be used independently for speech recognition:
+### ASR Module
 
 ```python
-#!/usr/bin/env python3
 import asr
 
-# Define callback for recognized text
 def handle_text(text):
     print(f"You said: {text}")
 
-# Start dictation
 asr.start_dictation(handle_text)
-
-# Keep running (press Ctrl+C to stop)
-try:
-    import time
-    while True:
-        time.sleep(1)
-except KeyboardInterrupt:
-    asr.stop_dictation()
 ```
 
-## Provider Configuration
+---
 
-### Text-to-Speech (TTS) Providers
+## 🎬 Demo
 
-#### System TTS (Default)
-- **macOS**: Uses built-in `say` command
-- **Linux**: Uses `espeak`, `festival`, or `flite` (install via package manager)
-- **Setup**: No API key needed
+[![TalkiTo Demo](https://img.youtube.com/vi/dliBN7pNAuw/0.jpg)](https://youtu.be/dliBN7pNAuw)
 
-#### OpenAI TTS
-- **Get API Key**: https://platform.openai.com/api-keys
-- **Voices**: alloy, echo, fable, onyx, nova, shimmer
-- **Usage**: `--tts-provider openai --tts-voice nova`
+---
 
-#### AWS Polly
-- **Get Credentials**: https://aws.amazon.com/polly/getting-started/
-- **Setup**: Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
-- **Voices**: Joanna, Matthew, Amy, Brian, and more
-- **Usage**: `--tts-provider polly --tts-voice Matthew`
+## 📄 License
 
-#### Azure Speech Services
-- **Get API Key**: https://azure.microsoft.com/en-us/services/cognitive-services/speech-services/
-- **Setup**: Set `AZURE_SPEECH_KEY` and `AZURE_REGION`
-- **Voices**: en-US-JennyNeural, en-US-AriaNeural, and many more
-- **Usage**: `--tts-provider azure --tts-voice en-US-JennyNeural`
+GNU Affero General Public License v3.0 or later - see [LICENSE](LICENSE)
 
-#### Google Cloud Text-to-Speech
-- **Get Credentials**: https://cloud.google.com/text-to-speech/docs/quickstart
-- **Setup**: Set `GOOGLE_APPLICATION_CREDENTIALS` to service account JSON path
-- **Voices**: en-US-Journey-F, en-US-News-N, and more
-- **Usage**: `--tts-provider gcloud --tts-voice en-US-Journey-F`
+**Copyright (C) 2025 Robert Macrae**
 
-#### ElevenLabs
-- **Get API Key**: https://elevenlabs.io/
-- **Setup**: Set `ELEVENLABS_API_KEY`
-- **Voices**: Various voice IDs available
-- **Usage**: Configure in code or .env file
+---
 
-#### Deepgram
-- **Get API Key**: https://deepgram.com/
-- **Setup**: Set `DEEPGRAM_API_KEY`
-- **Voices**: aura-asteria-en, aura-luna-en, aura-stella-en, and more
-- **Usage**: `--tts-provider deepgram --tts-voice aura-asteria-en`
+## 🔗 Links
 
-#### KittenTTS (Local / Offline)
-- **Install**: `pip install https://github.com/KittenML/KittenTTS/releases/download/0.1/kittentts-0.1.0-py3-none-any.whl soundfile phonemizer`
-- **Setup**: No API key required. First run prompts to download the selected model (default `kitten-tts-nano-0.2`) into the Hugging Face cache. Configure `KITTENTTS_MODEL` and `KITTENTTS_VOICE` to pick different quality/voice options.
-- **Best for**: Ultra-lightweight CPU-only voices that stay on-device.
-- **Usage**: `KITTENTTS_MODEL=kitten-tts-nano-0.2 talkito --tts-provider kittentts --tts-voice expr-voice-3-f`
-
-#### Kokoro (Local / Offline)
-- **Install**: `pip install 'kokoro>=0.9.4' soundfile phonemizer`
-- **Setup**: No API key required. TalkiTo will download Kokoro weights the first time you run it (set `KOKORO_LANGUAGE`, `KOKORO_VOICE`, `KOKORO_SPEED` to control defaults).
-- **Best for**: High-quality multilingual voices without sending audio to a cloud provider.
-- **Usage**: `talkito --tts-provider kokoro --tts-voice af_heart --tts-language en-US`
-
-### Automatic Speech Recognition (ASR) Providers
-
-#### Google Speech Recognition (Default)
-- **Free**: No API key required
-- **Limitations**: Best for short utterances, requires internet
-- **Usage**: Default when no provider specified
-
-#### Google Cloud Speech-to-Text
-- **Get Credentials**: https://cloud.google.com/speech-to-text/docs/quickstart
-- **Setup**: Set `GOOGLE_APPLICATION_CREDENTIALS`
-- **Features**: Better accuracy, streaming support
-- **Usage**: `--asr-provider gcloud`
-
-#### AssemblyAI
-- **Get API Key**: https://www.assemblyai.com/
-- **Setup**: Set `ASSEMBLYAI_API_KEY`
-- **Features**: Real-time transcription, speaker detection
-- **Usage**: Configure in code or .env file
-
-#### Deepgram
-- **Get API Key**: https://deepgram.com/
-- **Setup**: Set `DEEPGRAM_API_KEY`
-- **Features**: Fast, accurate real-time transcription
-- **Usage**: Configure in code or .env file
-
-#### Houndify
-- **Get Credentials**: https://www.houndify.com/
-- **Setup**: Set `HOUNDIFY_CLIENT_ID` and `HOUNDIFY_CLIENT_KEY`
-- **Features**: Natural language understanding
-- **Usage**: `--asr-provider houndify`
-
-#### AWS Transcribe
-- **Get Credentials**: https://aws.amazon.com/transcribe/
-- **Setup**: Set AWS credentials
-- **Features**: Streaming transcription
-- **Usage**: `--asr-provider aws --aws-region us-west-2`
-
-#### Azure Speech Services
-- **Get API Key**: https://azure.microsoft.com/en-us/services/cognitive-services/speech-services/
-- **Setup**: Set `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION`, then `pip install azure-cognitiveservices-speech`
-- **Features**: Low-latency streaming dictation with automatic punctuation
-- **Usage**: `AZURE_SPEECH_KEY=... AZURE_SPEECH_REGION=eastus talkito --asr-provider azure`
-
-#### Local Whisper (On-Device)
-- **Install**: `pip install faster-whisper` (default) or `WHISPER_COREML=1 pip install pywhispercpp` for Apple Silicon/CoreML acceleration
-- **Setup**: No API key required. Configure `WHISPER_MODEL` (e.g., `small`, `medium`), `WHISPER_DEVICE` (`cpu`, `cuda`, or `mps`), and `WHISPER_COMPUTE_TYPE` (`int8`, `int8_float16`, etc.). Models are cached locally and TalkiTo will prompt before downloading unless `TALKITO_AUTO_APPROVE_DOWNLOADS=1`.
-- **Usage**: `WHISPER_MODEL=small WHISPER_COMPUTE_TYPE=int8 talkito --asr-provider local_whisper`
-
-### Communication Providers (Remote Interaction)
-
-#### Twilio SMS
-- **Get Account**: https://www.twilio.com/try-twilio
-- **Setup**: Set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` you will need to a verified number to avoid being filtered.
-- **Features**: Send command output via SMS, receive input via SMS
-- **Usage**: `--sms-recipients +1234567890`
-
-#### Twilio WhatsApp
-- **Get Started**: https://www.twilio.com/whatsapp
-- **Setup Instructions**: Run `talkito --setup-whatsapp` for detailed setup guide
-- **Required Environment Variables**:
-  - `TWILIO_ACCOUNT_SID`: Your Twilio account SID
-  - `TWILIO_AUTH_TOKEN`: Your Twilio auth token
-  - `TWILIO_WHATSAPP_NUMBER`: Twilio's WhatsApp number (usually +14155238886)
-  - `WHATSAPP_RECIPIENTS`: Your WhatsApp number
-  - `ZROK_RESERVED_TOKEN`: Your zrok reserved share token
-- **Quick Setup**:
-  - Join Twilio WhatsApp Sandbox at https://www.twilio.com/console/sms/whatsapp/sandbox
-  - Send the join code via WhatsApp to +1 415 523 8886
-  - Install zrok and create a reserved share: `zrok reserve public http://localhost:8080`
-  - Set webhook URL in Twilio Console to: `https://YOUR-TOKEN.share.zrok.io/whatsapp`
-- **Usage**: `--whatsapp-recipients +1234567890`
-
-#### Slack
-- **Create App**: https://api.slack.com/apps
-- **Setup**: Set `SLACK_BOT_TOKEN` and optionally `SLACK_APP_TOKEN`
-- **Features**: Send output to channels, receive commands
-- **Usage**: `--slack-channel '#channel-name'`
-
-### Environment Configuration
-
-Talkito supports two environment files:
-- `.env` - Primary configuration (takes precedence)
-- `.talkito.env` - Secondary configuration (won't override `.env`)
-
-Copy `.env.example` to `.env` and add your API keys:
-
-```bash
-cp .env.example .env
-# Edit .env with your API keys
-```
-
-For WhatsApp setup with zrok tunneling:
-- `ZROK_RESERVED_TOKEN`: Your zrok reserved share token for webhook tunneling
-
-## Requirements
-
-- Python 3.10+
-- macOS (with `say` command) or Linux (with `espeak`, `festival`, or `flite`)
-- Optional: `SpeechRecognition` and `pyaudio` for ASR support
-- Optional: Provider-specific Python packages (installed as needed)
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
-
-## License
-
-This project is licensed under the GNU Affero General Public License v3.0 or later - see the [LICENSE](LICENSE) file for details.
-
-Copyright (C) 2025 Robert Macrae
+- **Homepage**: https://github.com/Sendarg/talkito-mcp
+- **Original Project**: https://github.com/robdmac/talkito
+- **Issues**: https://github.com/Sendarg/talkito-mcp/issues
+- **PyPI**: https://pypi.org/project/talkito/

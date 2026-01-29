@@ -38,7 +38,7 @@ TalkiTo brings natural speech capabilities to AI development tools. Talk to Clau
 - **Multiple providers** - OpenAI, AWS Polly, Azure, Google Cloud, ElevenLabs, Deepgram, Kokoro, KittenTTS
 - **Per-agent voice config** - Different voices for different AI assistants
 - **MCP Server support** - Run as standalone Model Context Protocol server
-- **Global configuration** - Settings persist in `~/.talkito.json`
+- **Global configuration** - Settings persist in `.env` or `.talkito.env` files
 
 ---
 
@@ -160,17 +160,13 @@ TalkiTo supports `.env` (primary) and `.talkito.env` (secondary) files.
 
 ### Global Configuration
 
-Settings persist in `~/.talkito.json`:
+TalkiTo looks for configuration files in the following order:
+1. `.env` in current working directory
+2. `.talkito.env` in current working directory
+3. `~/.env` in home directory
+4. `~/.talkito.env` in home directory
 
-```json
-{
-  "tts_provider": "kokoro",
-  "tts_voice": "af_heart",
-  "asr_provider": "google",
-  "asr_language": "en-US",
-  "auto_skip": true
-}
-```
+See `.env.example` for all available configuration options.
 
 ---
 
@@ -252,7 +248,7 @@ WHISPER_MODEL=small WHISPER_COMPUTE_TYPE=int8 talkito --asr-provider local_whisp
 
 ### Features
 - **MCP Server support** - Run as standalone Model Context Protocol server
-- **Global configuration** - Settings persist in `~/.talkito.json`
+- **Global configuration** - Settings persist in `.env` or `.talkito.env` files
 - **Per-agent voice config** - Different voices for different AI assistants
 
 ---

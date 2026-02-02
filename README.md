@@ -35,6 +35,7 @@ TalkiTo brings natural speech capabilities to AI development tools. Talk to Clau
 - **Full context reading** - Reads complete agent responses from session history logs
 - **Smart TTS fallback** - Automatic fallback to Kokoro TTS ensures uninterrupted speech
 - **Audio caching** - Intelligent caching reduces latency and API costs
+- **TTS Translation** - Auto-translate non-English text to English for TTS (via LLM API)
 - **Multiple providers** - OpenAI, AWS Polly, Azure, Google Cloud, ElevenLabs, Deepgram, Kokoro, KittenTTS
 - **Per-agent voice config** - Different voices for different AI assistants
 - **MCP Server support** - Run as standalone Model Context Protocol server
@@ -220,6 +221,25 @@ WHISPER_MODEL=small WHISPER_COMPUTE_TYPE=int8 talkito --asr-provider local_whisp
 - No API key required
 - Runs completely offline
 - Excellent accuracy
+
+### TTS Translation (Auto-Translate for Speech)
+
+When TTS is configured for English but the AI responds in another language (e.g., Chinese), TalkiTo can auto-translate the text before speaking.
+
+```bash
+# Configure translation (uses OpenAI-compatible API)
+export LLM_API_KEY="your-api-key"
+export LLM_BASE_URL="https://api.openai.com/v1"  # Optional, defaults to OpenAI
+export LLM_MODEL="gpt-4o-mini"  # Optional
+
+# Run TalkiTo - translation happens automatically when needed
+```
+
+**How it works:**
+- Detects text language using Unicode character analysis
+- If text language ≠ TTS voice language, translates via LLM
+- Simplifies long English text into conversational language
+- If translation fails, TTS is skipped (no garbled output)
 
 ---
 

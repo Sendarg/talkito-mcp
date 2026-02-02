@@ -133,9 +133,9 @@ class SpeechItem:
 
 # Configuration constants
 MIN_SPEAK_LENGTH = 3  # Minimum characters before speaking
-MAX_SPEAK_LENGTH = 300
+MAX_SPEAK_LENGTH = 500
 CACHE_SIZE = 10000  # Cache size for similarity checking
-SIMILARITY_THRESHOLD = 0.85  # How similar text must be to be considered a repeat
+SIMILARITY_THRESHOLD = 0.95  # How similar text must be to be considered a repeat
 DEBOUNCE_TIME = 0.5  # Seconds to wait before speaking rapidly changing text
 SKIP_INTERJECTIONS = ["oh", "hmm", "um", "right", "okay"]  # Interjections to add when auto-skipping
 
@@ -204,6 +204,11 @@ kittentts_voice = os.environ.get('KITTENTTS_VOICE', 'expr-voice-3-f')  # Default
 kokoro_language = os.environ.get('KOKORO_LANGUAGE', 'a')  # Default Kokoro language (American English)
 kokoro_voice = os.environ.get('KOKORO_VOICE', 'af_heart')  # Default Kokoro voice
 kokoro_speed = os.environ.get('KOKORO_SPEED', '1.0')  # Default Kokoro speed
+
+# LLM Translation config (for translating non-English text before TTS)
+llm_base_url = os.environ.get('LLM_BASE_URL', 'https://api.openai.com/v1')
+llm_api_key = os.environ.get('LLM_API_KEY', '')  # API key for translation LLM
+llm_model = os.environ.get('LLM_MODEL', 'gpt-4o-mini')  # Model for translation
 
 # Local model caching for offline TTS providers (kokoro/kittentts)
 _local_model_cache = None
@@ -463,11 +468,11 @@ def _create_model_instance(provider: str):
 
         # Model creation - consent was already obtained in main thread
         repo_id = 'hexgrad/Kokoro-82M'
-        log_message("DEBUG", f"About to create KPipeline(lang_code='en-us', repo_id='{repo_id}')")
+        log_message("INFO", f"About to create KPipeline(lang_code='en-us', repo_id='{repo_id}')")
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=UserWarning, module="torch")
             pipeline = KPipeline(lang_code='en-us', repo_id=repo_id)
-        log_message("DEBUG", "KPipeline created successfully")
+        log_message("INFO", "KPipeline created successfully")
         return pipeline
         
     elif provider == 'kittentts':
@@ -487,7 +492,7 @@ def _create_model_instance(provider: str):
 
         # Model creation - consent was already obtained in main thread
         model_name = kittentts_model
-        log_message("DEBUG", f"KittenTTS(model_name) with model_name = {model_name}")
+        log_message("INFO", f"KittenTTS(model_name) with model_name = {model_name}")
         return KittenTTS(model_name)
     else:
         raise ValueError(f"Unknown provider: {provider}")
@@ -499,9 +504,9 @@ def _load_model_background(provider: str):
 
     try:
         log_message("INFO", f"Background loading {provider} model...")
-        log_message("DEBUG", f"About to call _create_model_instance({provider})")
+        log_message("INFO", f"About to call _create_model_instance({provider})")
         model = _create_model_instance(provider)
-        log_message("DEBUG", f"_create_model_instance({provider}) returned successfully")
+        log_message("INFO", f"_create_model_instance({provider}) returned successfully")
 
         with _local_model_cache_lock:
             _local_model_cache = model
@@ -530,11 +535,11 @@ def preload_local_model(provider: str):
     with _local_model_cache_lock:
         # Skip if already loading or loaded the same provider
         if _local_model_loading:
-            log_message("DEBUG", f"Model already loading, skipping preload for {provider}")
+            log_message("INFO", f"Model already loading, skipping preload for {provider}")
             return
         
         if _local_model_provider == provider and _local_model_cache is not None:
-            log_message("DEBUG", f"Model already cached for {provider}, skipping preload")
+            log_message("INFO", f"Model already cached for {provider}, skipping preload")
             return
         
         # Check if model needs consent BEFORE starting background thread
@@ -663,15 +668,314 @@ def get_all_voices_for_provider(provider: str) -> list:
         all_voices.extend(voices)
     return all_voices
 
+
+def get_voice_language_for_provider(provider: str, voice: str) -> Optional[str]:
+    """Get the BCP-47 language code for a voice in a given provider.
+    
+    Args:
+        provider: TTS provider name (e.g., 'openai', 'aws', 'kokoro')
+        voice: Voice name or ID
+        
+    Returns:
+        Language code (e.g., 'en-US', 'zh-CN') or None if not found
+    """
+    if provider not in AVAILABLE_VOICES:
+        return None
+    
+    provider_voices = AVAILABLE_VOICES[provider]
+    if not provider_voices:
+        return None
+    
+    # Search for the voice in each language category
+    for lang_code, voices in provider_voices.items():
+        # Handle ElevenLabs format where voices are tuples (id, name)
+        if provider == 'elevenlabs':
+            for voice_tuple in voices:
+                if isinstance(voice_tuple, tuple) and voice_tuple[0] == voice:
+                    return lang_code
+        else:
+            if voice in voices:
+                return lang_code
+    
+    return None
+
+
+def get_primary_language(lang_code: str) -> str:
+    """Extract the primary language from a BCP-47 language code.
+    
+    Args:
+        lang_code: A BCP-47 language code like 'en-US', 'zh-CN', 'ja-JP'
+        
+    Returns:
+        Primary language code (e.g., 'en', 'zh', 'ja')
+    """
+    if not lang_code:
+        return ''
+    return lang_code.split('-')[0].lower()
+
+
+def detect_text_language(text: str) -> Optional[str]:
+    """Detect the primary language of text based on Unicode character ranges.
+    
+    Args:
+        text: Text to analyze
+        
+    Returns:
+        Primary language code (e.g., 'zh', 'ja', 'ko', 'en') or None if unknown
+    """
+    if not text:
+        return None
+    
+    # Count characters by script
+    cjk_count = 0  # Chinese/Japanese/Korean unified ideographs
+    hiragana_count = 0
+    katakana_count = 0
+    hangul_count = 0
+    latin_count = 0
+    cyrillic_count = 0
+    arabic_count = 0
+    devanagari_count = 0
+    total_alpha = 0
+    
+    for char in text:
+        code = ord(char)
+        
+        # CJK Unified Ideographs (Chinese characters, also used in Japanese)
+        if 0x4E00 <= code <= 0x9FFF or 0x3400 <= code <= 0x4DBF:
+            cjk_count += 1
+            total_alpha += 1
+        # Hiragana (Japanese)
+        elif 0x3040 <= code <= 0x309F:
+            hiragana_count += 1
+            total_alpha += 1
+        # Katakana (Japanese)
+        elif 0x30A0 <= code <= 0x30FF:
+            katakana_count += 1
+            total_alpha += 1
+        # Hangul (Korean)
+        elif 0xAC00 <= code <= 0xD7AF or 0x1100 <= code <= 0x11FF:
+            hangul_count += 1
+            total_alpha += 1
+        # Latin alphabet
+        elif 0x0041 <= code <= 0x007A or 0x00C0 <= code <= 0x024F:
+            latin_count += 1
+            total_alpha += 1
+        # Cyrillic
+        elif 0x0400 <= code <= 0x04FF:
+            cyrillic_count += 1
+            total_alpha += 1
+        # Arabic
+        elif 0x0600 <= code <= 0x06FF:
+            arabic_count += 1
+            total_alpha += 1
+        # Devanagari (Hindi)
+        elif 0x0900 <= code <= 0x097F:
+            devanagari_count += 1
+            total_alpha += 1
+    
+    if total_alpha == 0:
+        return None
+    
+    # Japanese: has hiragana or katakana, may have CJK
+    if hiragana_count > 0 or katakana_count > 0:
+        return 'ja'
+    
+    # Korean: has hangul
+    if hangul_count > total_alpha * 0.1:
+        return 'ko'
+    
+    # Chinese: has CJK but no Japanese kana
+    if cjk_count > total_alpha * 0.1:
+        return 'zh'
+    
+    # Cyrillic (Russian, etc.)
+    if cyrillic_count > total_alpha * 0.3:
+        return 'ru'
+    
+    # Arabic
+    if arabic_count > total_alpha * 0.3:
+        return 'ar'
+    
+    # Hindi/Devanagari
+    if devanagari_count > total_alpha * 0.3:
+        return 'hi'
+    
+    # Default to English for Latin script
+    if latin_count > total_alpha * 0.3:
+        return 'en'
+    
+    return None
+
+
+def validate_tts_language_matches_text(text: str, provider: str, voice: str, tts_language_config: Optional[str] = None) -> tuple[bool, str, str]:
+    """Check if the TTS voice language matches the input text language.
+    
+    Args:
+        text: Input text to speak
+        provider: TTS provider name
+        voice: Voice name or ID
+        tts_language_config: TTS language from config (e.g., 'a' for Kokoro, 'en-US' for others)
+        
+    Returns:
+        Tuple of (is_valid, tts_language, text_language)
+        - is_valid: True if languages match or if validation cannot be performed
+        - tts_language: The detected TTS language code
+        - text_language: The detected text language code
+    """
+    # Detect input text language
+    text_language = detect_text_language(text)
+    log_message("DEBUG", f"Language detection: text='{text[:30]}...', detected={text_language}")
+    
+    if not text_language:
+        log_message("DEBUG", "Language validation skipped: cannot detect text language")
+        return (True, '', '')
+    
+    # Try to get TTS language from voice lookup first
+    tts_language = get_voice_language_for_provider(provider, voice)
+    
+    # If voice lookup failed, try the config's language parameter
+    if not tts_language:
+        tts_language = tts_language_config
+    
+    # For Kokoro, the language setting uses short codes like 'a' (American), 'b' (British), etc.
+    # Map these to BCP-47 codes for comparison
+    if provider == 'kokoro' and tts_language:
+        kokoro_lang_map = {
+            'a': 'en-US',  # American English
+            'b': 'en-GB',  # British English
+            'j': 'ja-JP',  # Japanese
+            'z': 'zh-CN',  # Chinese
+            'e': 'es-ES',  # Spanish
+            'f': 'fr-FR',  # French
+            'h': 'hi-IN',  # Hindi
+            'i': 'it-IT',  # Italian
+            'p': 'pt-BR',  # Portuguese
+        }
+        if tts_language.lower() in kokoro_lang_map:
+            tts_language = kokoro_lang_map[tts_language.lower()]
+    
+    # If we still can't determine the TTS language, skip validation
+    if not tts_language:
+        log_message("DEBUG", f"Language validation skipped: cannot determine TTS language for {provider}")
+        return (True, '', text_language)
+    
+    # Compare primary languages (e.g., 'en' == 'en' for 'en-US' and 'en-GB')
+    tts_primary = get_primary_language(tts_language)
+    
+    is_valid = tts_primary == text_language
+    if not is_valid:
+        log_message("DEBUG", f"Language mismatch: TTS={tts_language} vs Text={text_language}")
+    return (is_valid, tts_language, text_language)
+
+
+def translate_for_tts(text: str, tts_language: str = 'en') -> str:
+    """Translate text to conversational English for TTS if needed.
+    
+    Rules:
+    - English text < 400 chars: return as-is
+    - English text >= 400 chars: simplify to conversational English
+    - Non-English text (Chinese, etc.): translate to conversational English
+    
+    Args:
+        text: Input text to potentially translate
+        tts_language: Target TTS language code (e.g., 'en')
+        
+    Returns:
+        Translated/simplified text, or original text if translation not needed or failed
+    """
+    import requests
+    
+    # Get config
+    api_key = llm_api_key or os.environ.get('LLM_API_KEY') or os.environ.get('OPENAI_API_KEY')
+    base_url = llm_base_url or os.environ.get('LLM_BASE_URL') or 'https://api.openai.com/v1'
+    model = llm_model or os.environ.get('LLM_MODEL') or 'gpt-4o-mini'
+    
+    # Sanitize base_url - remove extra quotes and comments
+    base_url = base_url.strip().strip('"').strip("'")
+    if '#' in base_url:
+        base_url = base_url.split('#')[0].strip()
+    log_message("DEBUG", f"translate_for_tts: base_url={base_url}, model={model}")
+    
+    if not api_key:
+        log_message("INFO", "No LLM API key configured, skipping translation")
+        return text
+    
+    # Detect text language
+    text_lang = detect_text_language(text)
+    
+    if text_lang is None:
+        log_message("INFO", f"Could not detect text language, returning original: '{text[:50]}...'")
+        return text
+    
+    # Check if translation is needed
+    tts_primary = get_primary_language(tts_language) if tts_language else 'en'
+    
+    # Rule 1: English text < 300 chars - no translation needed
+    if text_lang == 'en' and len(text) < 300:
+        log_message("INFO", f"English text < 300 chars, no translation needed")
+        return text
+    
+    # Rule 2: English text >= 300 chars - simplify to conversational
+    # Rule 3: Non-English text - translate to conversational English
+    if text_lang == 'en':
+        prompt = f"""Simplify the following text into natural, conversational workplace English.
+Keep it concise and easy to speak aloud. Remove jargon and technical complexity.
+Just output the simplified text, nothing else.
+
+Text:
+{text}"""
+        log_message("INFO", f"Simplifying long English text ({len(text)} chars)")
+    else:
+        prompt = f"""Translate the following text into natural, conversational workplace English.
+Use everyday business language that sounds natural when spoken aloud.
+Just output the English translation, nothing else.
+
+Text:
+{text}"""
+        log_message("INFO", f"Translating {text_lang} text to English")
+    
+    try:
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 1000,
+            "temperature": 0.3
+        }
+        
+        # Make API call
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            result = response.json()
+            translated = result["choices"][0]["message"]["content"].strip()
+            log_message("INFO", f"Translation success: '{text[:30]}...' -> '{translated[:50]}...'")
+            return translated
+        else:
+            log_message("WARNING", f"Translation API error {response.status_code}: {response.text[:100]}")
+            return text
+            
+    except Exception as e:
+        log_message("WARNING", f"Translation failed: {e}")
+        return text
+
+
 def get_state_voice_if_valid() -> Optional[str]:
     """Check if voice is valid for the given provider."""
     state = get_shared_state()
     provider = state.tts_provider or tts_provider
     
-    log_message("DEBUG", f"get_state_voice_if_valid check - provider={provider}, state.voice={state.tts_voice}")
+    log_message("INFO", f"get_state_voice_if_valid check - provider={provider}, state.voice={state.tts_voice}")
     
     if provider not in AVAILABLE_VOICES:
-        log_message("DEBUG", f"provider {provider} not in AVAILABLE_VOICES")
+        log_message("INFO", f"provider {provider} not in AVAILABLE_VOICES")
         return None
 
     voices = get_all_voices_for_provider(provider)
@@ -682,7 +986,7 @@ def get_state_voice_if_valid() -> Optional[str]:
         if state.tts_voice in valid_ids:
             return state.tts_voice
         else:
-             log_message("DEBUG", f"Voice {state.tts_voice} NOT in valid_ids: {valid_ids}")
+             log_message("INFO", f"Voice {state.tts_voice} NOT in valid_ids: {valid_ids}")
     else:
         if state.tts_voice in voices:
             return state.tts_voice
@@ -873,7 +1177,7 @@ class AudioPlaybackThread(threading.Thread):
         # Store process in playback control for skip handling
         with self.playback_control.lock:
             self.playback_control.current_process = self.process
-            log_message("DEBUG", f"Starting audio player process {self.process.pid}")
+            log_message("INFO", f"Starting audio player process {self.process.pid}")
 
         try:
             # Poll + allow cooperative interruption
@@ -1325,7 +1629,7 @@ def _play_audio_file(audio_path: str, use_process_control: bool = True) -> bool:
     """Play audio file using non-blocking threaded playback.
     Returns immediately after starting the playback thread.
     """
-    log_message("DEBUG", "_play_audio_file")
+    log_message("INFO", "_play_audio_file")
     with _state_lock:
         active_item = current_speech_item
     if not use_process_control:
@@ -1448,7 +1752,7 @@ def _play_audio_file_blocking(audio_path: str, use_process_control: bool = True,
         if use_process_control:
             with playback_control.lock:
                 playback_control.current_process = process
-                log_message("DEBUG", "audio process started via original method")
+                log_message("INFO", "audio process started via original method")
 
         try:
             # Poll + allow cooperative interruption
@@ -1467,7 +1771,7 @@ def _play_audio_file_blocking(audio_path: str, use_process_control: bool = True,
     finally:
         if use_process_control:
             with playback_control.lock:
-                log_message("DEBUG", "audio process ended")
+                log_message("INFO", "audio process ended")
                 playback_control.current_process = None
         _mark_playback_finished(speech_item)
 
@@ -1525,7 +1829,7 @@ def _save_audio_to_cache(audio_bytes: bytes, ext: str, provider: str, voice: str
         with open(filepath, 'wb') as f:
             f.write(audio_bytes)
         
-        log_message("DEBUG", f"Saved_audio_cache: {filepath}")
+        log_message("INFO", f"Saved_audio_cache: {filepath}")
         return str(filepath)
     except Exception as e:
         log_message("WARNING", f"Failed to save audio cache: {e}")
@@ -1608,7 +1912,7 @@ def validate_provider_config(provider: str, silent: bool = False) -> bool:
     env_var = provider_info.get('env_var')
     env_value = os.environ.get(env_var) if env_var else None
     if env_var and not env_value:
-        log_message("DEBUG", f"validate_provider_config: provider={provider} missing env_var={env_var}")
+        log_message("INFO", f"validate_provider_config: provider={provider} missing env_var={env_var}")
         if not silent:
             print(f"Error: {env_var} environment variable not set")
             print(f"Please set it with: export {env_var}='your-api-key'")
@@ -1623,7 +1927,7 @@ def validate_provider_config(provider: str, silent: bool = False) -> bool:
                     import kokoro  # noqa: F401
                 elif provider == 'kittentts':
                     import kittentts  # noqa: F401
-            log_message("DEBUG", f"Local provider {provider} module is installed")
+            log_message("INFO", f"Local provider {provider} module is installed")
             return True
         except ImportError:
             if not silent:
@@ -1976,14 +2280,14 @@ class KokoroTTSProvider(TTSProvider):
                 log_message("ERROR", "Failed to get cached Kokoro model")
                 return None
 
-            log_message("DEBUG", "Using cached KokoroTTS model")
-            log_message("DEBUG", f"{text=} {voice=} {speed=}")
+            log_message("INFO", "Using cached KokoroTTS model")
+            log_message("INFO", f"{text=} {voice=} {speed=}")
 
             # Generate audio with the specified voice and speed
             # Kokoro returns a generator, we need to process all chunks
             audio_chunks = []
             for i, (gs, ps, audio) in enumerate(pipeline(text, voice=voice, speed=speed)):
-                log_message("DEBUG", f"Appending audio chunk {i}")
+                log_message("INFO", f"Appending audio chunk {i}")
                 audio_chunks.append(audio)
 
             # Concatenate all audio chunks
@@ -2255,7 +2559,7 @@ def _find_latest_codex_session_file() -> Optional[Path]:
             return None
         history_entry = json.loads(last_line)
     except Exception as e:
-        log_message("DEBUG", f"Error reading Codex history: {e}")
+        log_message("INFO", f"Error reading Codex history: {e}")
         return None
 
     session_id = history_entry.get("session_id") if isinstance(history_entry, dict) else None
@@ -2266,7 +2570,7 @@ def _find_latest_codex_session_file() -> Optional[Path]:
     try:
         session_date = datetime.fromtimestamp(ts_value) if isinstance(ts_value, (int, float)) else None
     except (OSError, OverflowError, ValueError) as e:
-        log_message("DEBUG", f"Invalid Codex history timestamp: {e}")
+        log_message("INFO", f"Invalid Codex history timestamp: {e}")
         session_date = None
 
     if session_date is None:
@@ -2287,7 +2591,7 @@ def _find_latest_codex_session_file() -> Optional[Path]:
     try:
         matching_files = list(session_dir.glob(pattern))
     except Exception as e:
-        log_message("DEBUG", f"Error listing Codex session files: {e}")
+        log_message("INFO", f"Error listing Codex session files: {e}")
         return None
 
     if not matching_files:
@@ -2296,7 +2600,7 @@ def _find_latest_codex_session_file() -> Optional[Path]:
     try:
         latest_file = max(matching_files, key=lambda path: path.stat().st_mtime)
     except OSError as e:
-        log_message("DEBUG", f"Error selecting latest Codex session file: {e}")
+        log_message("INFO", f"Error selecting latest Codex session file: {e}")
         return None
     log_message("INFO", f"get Codex session files: {latest_file}")
     return latest_file
@@ -2346,7 +2650,7 @@ def _get_latest_codex_agent_message() -> Optional[str]:
             lines = handle.readlines()
             new_offset = handle.tell()
     except Exception as e:
-        log_message("DEBUG", f"Failed reading Codex session file {session_file}: {e}")
+        log_message("INFO", f"Failed reading Codex session file {session_file}: {e}")
         return None
 
     baseline_ts = last_ts if last_ts is not None else _tts_start_time - 1
@@ -2384,7 +2688,7 @@ def _wait_for_codex_agent_message(max_wait: float = 0.6, interval: float = 0.05)
         message = _get_latest_codex_agent_message()
         if message:
             if attempt:
-                log_message("DEBUG", f"Found Codex agent message after retry {attempt}: '{message}'")
+                log_message("INFO", f"Found Codex agent message after retry {attempt}: '{message}'")
             return message
         attempt += 1
         time.sleep(interval)
@@ -2401,7 +2705,7 @@ def _claude_project_dir(project_path: Optional[Path] = None) -> Optional[Path]:
         project_dir = Path.home() / ".claude" / "projects" / slug
         return project_dir if project_dir.exists() else None
     except Exception as e:
-        log_message("DEBUG", f"Failed to resolve Claude project dir: {e}")
+        log_message("INFO", f"Failed to resolve Claude project dir: {e}")
         return None
 
 
@@ -2431,7 +2735,7 @@ def _find_latest_claude_session_file() -> Optional[Path]:
                     latest_mtime = mtime
                     latest_path = path
         except Exception as e:
-            log_message("DEBUG", f"Error scanning Claude project dir {project_dir}: {e}")
+            log_message("INFO", f"Error scanning Claude project dir {project_dir}: {e}")
             return None
         return latest_path
 
@@ -2452,7 +2756,7 @@ def _find_latest_claude_session_file() -> Optional[Path]:
         with index_path.open("r", encoding="utf-8") as f:
             index_data = json.load(f)
     except Exception as e:
-        log_message("DEBUG", f"Failed to read Claude sessions index {index_path}: {e}")
+        log_message("INFO", f"Failed to read Claude sessions index {index_path}: {e}")
         return None
 
     entries = index_data.get("entries") if isinstance(index_data, dict) else None
@@ -2546,7 +2850,7 @@ def _get_latest_claude_agent_message() -> Optional[str]:
             lines = handle.readlines()
             new_offset = handle.tell()
     except Exception as e:
-        log_message("DEBUG", f"Failed reading Claude session file {session_file}: {e}")
+        log_message("INFO", f"Failed reading Claude session file {session_file}: {e}")
         return None
 
     baseline_ts = last_ts if last_ts is not None else _tts_start_time - 1
@@ -2583,7 +2887,7 @@ def _wait_for_claude_agent_message(max_wait: float = 0.6, interval: float = 0.05
         message = _get_latest_claude_agent_message()
         if message:
             if attempt:
-                log_message("DEBUG", f"Found Claude agent message after retry {attempt}: '{message}'")
+                log_message("INFO", f"Found Claude agent message after retry {attempt}: '{message}'")
             return message
         attempt += 1
         time.sleep(interval)
@@ -2655,6 +2959,18 @@ def speak_text(text: str, engine: str, needs_skip: bool = False) -> bool:
     # Get TTS provider from shared state or fallback to global
     config = get_tts_config()
     current_provider = config.get('provider') or tts_provider or 'system'
+    current_voice = config.get('voice')
+    current_language = config.get('language')
+    
+    # Check if text language matches TTS language, translate if needed
+    if current_provider != 'system':
+        is_valid, tts_lang, text_lang = validate_tts_language_matches_text(
+            text, current_provider, current_voice or '', current_language)
+        if not is_valid:
+            # Instead of blocking, translate the text to match TTS language
+            log_message("INFO", f"Text language ({text_lang}) doesn't match TTS language ({tts_lang}), attempting translation...")
+            text = translate_for_tts(text, tts_lang)
+            log_message("INFO", f"Text after translation: '{text[:80]}...' " if len(text) > 80 else f"Text after translation: '{text}'")
 
     # Use provider classes directly
     provider = create_tts_provider(current_provider)
@@ -2676,7 +2992,7 @@ def speak_text(text: str, engine: str, needs_skip: bool = False) -> bool:
                 # Check if Kokoro is cached/available
                 from .models import check_model_cached
                 is_cached = check_model_cached('kokoro', 'hexgrad/Kokoro-82M')
-                log_message("DEBUG", f"Checking Kokoro fallback: cached={is_cached}")
+                log_message("INFO", f"Checking Kokoro fallback: cached={is_cached}")
                 
                 if is_cached:
                     log_message("INFO", f"Falling back to Kokoro TTS (temporary, not persisted)...")
@@ -2691,7 +3007,7 @@ def speak_text(text: str, engine: str, needs_skip: bool = False) -> bool:
                     fallback_provider = create_tts_provider('kokoro', fallback_config)
                     if fallback_provider:
                         try:
-                            log_message("DEBUG", "Attempting Kokoro speech...")
+                            log_message("INFO", "Attempting Kokoro speech...")
                             result = fallback_provider.speak(text, use_process_control=True, needs_skip=needs_skip)
                             if result:
                                 log_message("INFO", "Fallback to Kokoro successful")
@@ -2700,7 +3016,7 @@ def speak_text(text: str, engine: str, needs_skip: bool = False) -> bool:
                                 log_message("WARNING", "Kokoro fallback returned False")
                         except Exception as k_err:
                             log_message("WARNING", f"Fallback to Kokoro failed: {k_err}")
-                            log_message("DEBUG", traceback.format_exc())
+                            log_message("INFO", traceback.format_exc())
             except Exception as fb_err:
                  log_message("WARNING", f"Error checking fallback provider: {fb_err}")
 
@@ -2778,7 +3094,7 @@ def speak_with_default(text, engine):
             kwargs['preexec_fn'] = os.setsid
         
         process = subprocess.Popen(cmd, **kwargs)
-        log_message("DEBUG", f"Started {engine} audio process with PID: {process.pid}")
+        log_message("INFO", f"Started {engine} audio process with PID: {process.pid}")
         with playback_control.lock:
             playback_control.current_process = process
         
@@ -2788,12 +3104,12 @@ def speak_with_default(text, engine):
                 # For stdin-based engines, we can't easily poll, so just communicate
                 stdout, stderr = process.communicate(input=kwargs["input"])
             else:
-                log_message("DEBUG", "Poll process with timeout to check for interruptions")
+                log_message("INFO", "Poll process with timeout to check for interruptions")
                 # Poll process with timeout to check for interruptions
                 while process.poll() is None:
                     # Check if we should stop
                     if shutdown_event.is_set() or playback_control.skip_current or playback_control.skip_all:
-                        log_message("DEBUG", ";looks like we should stop")
+                        log_message("INFO", ";looks like we should stop")
                         process.terminate()
                         try:
                             process.wait(timeout=0.1)
@@ -2807,7 +3123,7 @@ def speak_with_default(text, engine):
             return False
         finally:
             with playback_control.lock:
-                log_message("DEBUG", "audio process is now none")
+                log_message("INFO", "audio process is now none")
                 playback_control.current_process = None
                 
     except Exception as e:
@@ -2869,15 +3185,15 @@ def tts_worker(engine: str):
                 from . import asr
                 if hasattr(asr, 'set_ignore_input'):
                     asr.set_ignore_input(True)
-                    log_message("DEBUG", "Set ASR to ignore input during TTS")
+                    log_message("INFO", "Set ASR to ignore input during TTS")
             except Exception as e:
-                log_message("DEBUG", f"Could not set ASR ignore flag: {e}")
+                log_message("INFO", f"Could not set ASR ignore flag: {e}")
 
             # Check for auto-skip before starting audio generation
             needs_skip = False
 
 
-            log_message("DEBUG",
+            log_message("INFO",
                         f"Auto-skip check: {auto_skip_tts_enabled=} {_local_model_loading=} {tts_queue.empty()=}, current_speech_item={current_speech_item is not None}")
 
             if auto_skip_tts_enabled and not _local_model_loading:
@@ -2889,9 +3205,9 @@ def tts_worker(engine: str):
                 if is_currently_playing and current_speech_item and current_speech_item.start_time:
                     time_playing = time.time() - current_speech_item.start_time
                     playing_long_enough = time_playing >= 1.0  # Minimum 1 second
-                    log_message("DEBUG", f"Current item has been playing for {time_playing:.2f} seconds")
+                    log_message("INFO", f"Current item has been playing for {time_playing:.2f} seconds")
 
-                log_message("DEBUG", f"{is_currently_speaking=} {is_currently_playing=} {playing_long_enough=} {time_playing=}")
+                log_message("INFO", f"{is_currently_speaking=} {is_currently_playing=} {playing_long_enough=} {time_playing=}")
 
                 # Only skip current item if something is actually speaking, a process exists, and neither item is an exception
                 current_is_exception = bool(current_speech_item and current_speech_item.is_exception)
@@ -2910,11 +3226,11 @@ def tts_worker(engine: str):
                         text_to_speak = f"{interjection}, {text_to_speak}"
                         log_message("INFO", f"Added interjection '{interjection}' for smoother transition")
                     else:
-                        log_message("DEBUG", "Skipping interjection - current item hasn't played long enough")
+                        log_message("INFO", "Skipping interjection - current item hasn't played long enough")
                 elif is_currently_playing:
                     log_message("WARNING", "Process exists but not actually speaking - race condition detected!")
                 else:
-                    log_message("DEBUG", "Nothing currently playing - no auto-skip needed")
+                    log_message("INFO", "Nothing currently playing - no auto-skip needed")
 
             # Set current speech item with thread safety and record start time
             with _state_lock:
@@ -2961,11 +3277,11 @@ def tts_worker(engine: str):
                     # For tap-to-talk mode, ASR should only be active when key is pressed
                     if asr_mode in ['auto-input']:
                         asr.set_ignore_input(False)
-                        log_message("DEBUG", "Resumed ASR after speaking")
+                        log_message("INFO", "Resumed ASR after speaking")
                     else:
-                        log_message("DEBUG", f"Not resuming ASR after speaking (mode: {asr_mode})")
+                        log_message("INFO", f"Not resuming ASR after speaking (mode: {asr_mode})")
             except Exception as e:
-                log_message("DEBUG", f"Could not resume ASR: {e}")
+                log_message("INFO", f"Could not resume ASR: {e}")
 
         except queue.Empty:
             continue
@@ -2975,7 +3291,7 @@ def tts_worker(engine: str):
 
 def _retry_delayed_speech(speech_item: SpeechItem, callback: Optional[Callable[[str], None]] = None, forced: bool = False):
     global _delayed_timer, _delayed_speech_item, last_queued_text
-    log_message("DEBUG", f"retry_delayed_speech [{speech_item.text}] {forced=}")
+    log_message("INFO", f"retry_delayed_speech [{speech_item.text}] {forced=}")
     with _delayed_items_lock:
         with _state_lock:
             if _delayed_timer:
@@ -3020,11 +3336,11 @@ def queue_for_speech(original_text: str, line_number: Optional[int] = None, sour
     # Check shared state if available
     shared_state = get_shared_state()
     if not shared_state.tts_enabled:
-        log_message("DEBUG", "TTS disabled in shared state, not queueing speech")
+        log_message("INFO", "TTS disabled in shared state, not queueing speech")
         return ""
 
     # Log the original text before any filtering
-    log_message("DEBUG", f"queue_for_speech received: '{original_text}' (exception_match={exception_match}, has_constituent_parts={constituent_parts is not None})")
+    log_message("INFO", f"queue_for_speech received: '{original_text}' (exception_match={exception_match}, has_constituent_parts={constituent_parts is not None})")
 
     active_profile = _get_active_profile()
     log_message("INFO", f"active_profile_is: '{active_profile.name}'. with_text: '{original_text}'")
@@ -3033,7 +3349,7 @@ def queue_for_speech(original_text: str, line_number: Optional[int] = None, sour
         agent_message = _wait_for_codex_agent_message(max_wait=0.25)
         if agent_message:
             speakable_text = agent_message
-            log_message("DEBUG", f"Fetched Codex agent message from session log: '{agent_message}'")
+            log_message("INFO", f"Fetched Codex agent message from session log: '{agent_message}'")
         else:
             log_message("INFO", "No Codex agent message found in time; dropping speech for this trigger")
             return ""
@@ -3041,15 +3357,31 @@ def queue_for_speech(original_text: str, line_number: Optional[int] = None, sour
         agent_message = _wait_for_claude_agent_message(max_wait=0.25)
         if agent_message:
             speakable_text = agent_message
-            log_message("DEBUG", f"Fetched Claude agent message from session log: '{agent_message}'")
+            log_message("INFO", f"Fetched Claude agent message from session log: '{agent_message}'")
         else:
             log_message("INFO", "No Claude agent message found in time; dropping speech for this trigger")
             return ""
     elif active_profile.name == "mcp":
         speakable_text = original_text
-        log_message("DEBUG", f"Fetched MCP message: '{original_text}'")
+        log_message("DEBUG", f"MCP message received: '{original_text[:50]}...'")
+        
+        # Translate text if TTS language doesn't match text language
+        config = get_tts_config()
+        current_provider = config.get('provider') or tts_provider or 'system'
+        
+        if current_provider != 'system':
+            is_valid, tts_lang, text_lang = validate_tts_language_matches_text(
+                speakable_text, current_provider, config.get('voice') or '', config.get('language'))
+            if not is_valid:
+                log_message("INFO", f"Translating {text_lang} text to {tts_lang}...")
+                original_before = speakable_text
+                speakable_text = translate_for_tts(speakable_text, tts_lang)
+                if speakable_text == original_before:
+                    log_message("WARNING", f"Translation failed, skipping TTS")
+                    return ""
+                log_message("INFO", f"Translated: '{speakable_text[:60]}...'" if len(speakable_text) > 60 else f"Translated: '{speakable_text}'")
     else:
-        log_message("DEBUG", f"other type of profile: '{active_profile.name}'")
+        log_message("INFO", f"other type of profile: '{active_profile.name}'")
         return ""
     
 
@@ -3068,7 +3400,7 @@ def queue_for_speech(original_text: str, line_number: Optional[int] = None, sour
         text_is_novel = _text_is_novel(speakable_text.lower()[:-1], last_queued_text.lower()[:-1])
         if text_is_novel:
             if is_similar_to_recent(speakable_text):
-                log_message("DEBUG", "On further inspection text is similar to something already spoken")
+                log_message("INFO", "On further inspection text is similar to something already spoken")
                 text_is_novel = False
 
         if text_is_novel and _delayed_speech_item:
@@ -3084,7 +3416,7 @@ def queue_for_speech(original_text: str, line_number: Optional[int] = None, sour
 
         with _delayed_items_lock:
             if _delayed_timer:
-                log_message("DEBUG", "Clearing out a delayed item as a partial of the new text")
+                log_message("INFO", "Clearing out a delayed item as a partial of the new text")
                 last_queued_text = ""  # If we've cancelled pending text then we don't want to debounce due to similarity
                 _delayed_timer.cancel()
                 _delayed_timer = None
@@ -3129,7 +3461,7 @@ def queue_for_speech(original_text: str, line_number: Optional[int] = None, sour
                     if part and part.strip():
                         if is_similar_to_recent(part):
                             matches += 1
-                            log_message("DEBUG", f"Constituent part matches cache: '{part[:50]}...'")
+                            log_message("INFO", f"Constituent part matches cache: '{part[:50]}...'")
 
                 if matches >= len(constituent_parts) // 2:
                     log_message("INFO", f"Skipping text - {matches}/{len(constituent_parts)} constituent parts already in cache")
@@ -3151,7 +3483,7 @@ def queue_for_speech(original_text: str, line_number: Optional[int] = None, sour
 
         if not delay and line_number is not None and line_number > highest_spoken_line_number:
             highest_spoken_line_number = line_number
-            log_message("DEBUG", f"Updated highest_spoken_line_number to {highest_spoken_line_number}")
+            log_message("INFO", f"Updated highest_spoken_line_number to {highest_spoken_line_number}")
 
     with _state_lock:
         # Create speech item
@@ -3381,7 +3713,7 @@ def stop_tts_immediately():
             except Exception as e:
                 log_message("ERROR", f"Error stopping TTS process: {e}")
             finally:
-                log_message("DEBUG", "audio process finished")
+                log_message("INFO", "audio process finished")
                 playback_control.current_process = None
 
 
@@ -3727,7 +4059,7 @@ def configure_tts_from_args(args) -> bool:
         
     elif tts_provider == 'kokoro':
         # Skip expensive kokoro import - will validate during actual model loading
-        log_message("DEBUG", "Skipping kokoro validation in configure_tts_from_dict - will validate during model loading")
+        log_message("INFO", "Skipping kokoro validation in configure_tts_from_dict - will validate during model loading")
         
         # Update global config variables
         global kokoro_voice, kokoro_language, kokoro_speed
@@ -3792,7 +4124,7 @@ if __name__ == "__main__":
     elif not sys.stdin.isatty():
         # Read from stdin if piped
         text_to_speak = sys.stdin.read().strip()
-        log_message("DEBUG", f"Read from stdin: {text_to_speak}")
+        log_message("INFO", f"Read from stdin: {text_to_speak}")
     else:
         # Interactive mode - prompt for input
         print("Interactive TTS mode. Type text and press Enter to speak.")
@@ -3844,7 +4176,7 @@ if __name__ == "__main__":
         start_tts_worker(engine)
         
         # Queue the text for speech
-        log_message("DEBUG", f"Queueing text for speech: {text_to_speak}")
+        log_message("INFO", f"Queueing text for speech: {text_to_speak}")
         queue_for_speech(text_to_speak)
         
         # Wait for speech to complete

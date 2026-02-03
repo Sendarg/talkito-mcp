@@ -76,7 +76,9 @@ def log_message(level: str, message: str):
         pass
 
 # Server configuration - Changed to include server name
-app = FastMCP("talkito-sse-server")
+# stateless_http=True enables stateless mode for better reconnection handling
+# Each request is handled independently without session state
+app = FastMCP("talkito-sse-server", stateless_http=True)
 
 # CORS headers for browser access
 _cors_enabled = False
@@ -3296,7 +3298,7 @@ def main():
         selected_tts = tts.select_best_tts_provider()
         log_message("INFO", f"Startup DEBUG: select_best_tts_provider returned: {selected_tts}")
         
-        state.set_tts_config(provider=selected_tts,voice="BpjGufoPiobT79j2vtj4") # for mcp special voice       
+        state.set_tts_config(provider=selected_tts)  # Use provider's default voice
         # Verify state content immediately
         tts_state=f"provider={state.tts_provider},voice={state.tts_voice},model={state.tts_model}"
         log_message("INFO", f"Startup DEBUG: selected_tts_completed: {tts_state}")

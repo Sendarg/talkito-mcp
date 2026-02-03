@@ -418,7 +418,7 @@ async def run_terminal_agent_extensions(args) -> int:
                 config['log_file_path'] = args.log_file
                 
             if not args.dont_auto_skip_tts:
-                config['auto_skip_tts'] = True
+                config['auto_skip_tts'] = False
             
             # Apply configuration
             configure_mcp_server(**config)

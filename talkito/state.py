@@ -211,7 +211,7 @@ class TalkitoState:
     tts_model: Optional[str] = None
     tts_rate: Optional[float] = None
     tts_pitch: Optional[float] = None
-    tts_mode: str = 'auto-skip'
+    tts_mode: str = 'full' #'auto-skip' or 'off'
     
     # ASR configuration details
     asr_language: Optional[str] = None

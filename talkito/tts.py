@@ -133,11 +133,11 @@ class SpeechItem:
 
 # Configuration constants
 MIN_SPEAK_LENGTH = 3  # Minimum characters before speaking
-MAX_SPEAK_LENGTH = 500
+MAX_SPEAK_LENGTH = 2000 # about 400 words
 CACHE_SIZE = 10000  # Cache size for similarity checking
 SIMILARITY_THRESHOLD = 0.95  # How similar text must be to be considered a repeat
 DEBOUNCE_TIME = 0.5  # Seconds to wait before speaking rapidly changing text
-SKIP_INTERJECTIONS = ["oh", "hmm", "um", "right", "okay"]  # Interjections to add when auto-skipping
+SKIP_INTERJECTIONS = ["hmm", "um", "right", "okay"]  # Interjections to add when auto-skipping
 
 # Compiled regex patterns for performance
 RE_FILENAME_PATH = re.compile(r'(?:/?(?:[\w.-]+/)+)([\w.-]+)')
@@ -194,7 +194,7 @@ polly_voice = os.environ.get('AWS_POLLY_VOICE', 'Joanna')  # Default AWS Polly v
 polly_region = os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')  # Default AWS region for Polly
 azure_voice = os.environ.get('AZURE_VOICE', 'en-US-AriaNeural')  # Default Azure voice
 azure_region = os.environ.get('AZURE_REGION', 'eastus')  # Default Azure region
-gcloud_voice = os.environ.get('GCLOUD_VOICE', 'en-US-Journey-F')  # Default Google Cloud voice
+gcloud_voice = os.environ.get('GCLOUD_VOICE', 'en-us-Chirp3-HD-Autonoe')  # Default Google Cloud voice
 gcloud_language_code = os.environ.get('GCLOUD_LANGUAGE_CODE', 'en-US')  # Default Google Cloud language code
 elevenlabs_voice_id = os.environ.get('ELEVENLABS_VOICE_ID', '5l5f8iK3YPeGga21rQIX')  # Default ElevenLabs voice (Rachel)
 elevenlabs_model_id = os.environ.get('ELEVENLABS_MODEL_ID', 'eleven_v3')  # Default ElevenLabs model
@@ -715,100 +715,75 @@ def get_primary_language(lang_code: str) -> str:
 
 
 def detect_text_language(text: str) -> Optional[str]:
-    """Detect the primary language of text based on Unicode character ranges.
+    """Detect if text needs translation based on non-English character ratio.
+    
+    Simplified logic: if more than 0.1% of alphabetic characters are non-Latin,
+    the text is considered non-English and needs translation.
     
     Args:
         text: Text to analyze
         
     Returns:
-        Primary language code (e.g., 'zh', 'ja', 'ko', 'en') or None if unknown
+        'en' if text is primarily English, 'other' if translation needed, None if unknown
     """
     if not text:
         return None
     
-    # Count characters by script
-    cjk_count = 0  # Chinese/Japanese/Korean unified ideographs
-    hiragana_count = 0
-    katakana_count = 0
-    hangul_count = 0
+    # Count Latin vs non-Latin alphabetic characters
     latin_count = 0
-    cyrillic_count = 0
-    arabic_count = 0
-    devanagari_count = 0
-    total_alpha = 0
+    non_latin_count = 0
     
     for char in text:
         code = ord(char)
         
-        # CJK Unified Ideographs (Chinese characters, also used in Japanese)
-        if 0x4E00 <= code <= 0x9FFF or 0x3400 <= code <= 0x4DBF:
-            cjk_count += 1
-            total_alpha += 1
+        # Latin alphabet (basic + extended)
+        if 0x0041 <= code <= 0x007A or 0x00C0 <= code <= 0x024F:
+            latin_count += 1
+        # CJK Unified Ideographs (Chinese/Japanese/Korean)
+        elif 0x4E00 <= code <= 0x9FFF or 0x3400 <= code <= 0x4DBF:
+            non_latin_count += 1
         # Hiragana (Japanese)
         elif 0x3040 <= code <= 0x309F:
-            hiragana_count += 1
-            total_alpha += 1
+            non_latin_count += 1
         # Katakana (Japanese)
         elif 0x30A0 <= code <= 0x30FF:
-            katakana_count += 1
-            total_alpha += 1
+            non_latin_count += 1
         # Hangul (Korean)
         elif 0xAC00 <= code <= 0xD7AF or 0x1100 <= code <= 0x11FF:
-            hangul_count += 1
-            total_alpha += 1
-        # Latin alphabet
-        elif 0x0041 <= code <= 0x007A or 0x00C0 <= code <= 0x024F:
-            latin_count += 1
-            total_alpha += 1
+            non_latin_count += 1
         # Cyrillic
         elif 0x0400 <= code <= 0x04FF:
-            cyrillic_count += 1
-            total_alpha += 1
+            non_latin_count += 1
         # Arabic
         elif 0x0600 <= code <= 0x06FF:
-            arabic_count += 1
-            total_alpha += 1
+            non_latin_count += 1
         # Devanagari (Hindi)
         elif 0x0900 <= code <= 0x097F:
-            devanagari_count += 1
-            total_alpha += 1
+            non_latin_count += 1
+        # Thai
+        elif 0x0E00 <= code <= 0x0E7F:
+            non_latin_count += 1
+        # Hebrew
+        elif 0x0590 <= code <= 0x05FF:
+            non_latin_count += 1
+    
+    total_alpha = latin_count + non_latin_count
     
     if total_alpha == 0:
         return None
     
-    # Japanese: has hiragana or katakana, may have CJK
-    if hiragana_count > 0 or katakana_count > 0:
-        return 'ja'
+    # If more than 0.1% of alphabetic characters are non-Latin, needs translation
+    non_latin_ratio = non_latin_count / total_alpha
+    if non_latin_ratio > 0.001:  # 0.1%
+        return 'other'  # Non-English, needs translation
     
-    # Korean: has hangul
-    if hangul_count > total_alpha * 0.1:
-        return 'ko'
-    
-    # Chinese: has CJK but no Japanese kana
-    if cjk_count > total_alpha * 0.1:
-        return 'zh'
-    
-    # Cyrillic (Russian, etc.)
-    if cyrillic_count > total_alpha * 0.3:
-        return 'ru'
-    
-    # Arabic
-    if arabic_count > total_alpha * 0.3:
-        return 'ar'
-    
-    # Hindi/Devanagari
-    if devanagari_count > total_alpha * 0.3:
-        return 'hi'
-    
-    # Default to English for Latin script
-    if latin_count > total_alpha * 0.3:
-        return 'en'
-    
-    return None
+    return 'en'
 
 
 def validate_tts_language_matches_text(text: str, provider: str, voice: str, tts_language_config: Optional[str] = None) -> tuple[bool, str, str]:
     """Check if the TTS voice language matches the input text language.
+    
+    Simplified: if text contains >0.1% non-English characters, it needs translation.
     
     Args:
         text: Input text to speak
@@ -818,54 +793,21 @@ def validate_tts_language_matches_text(text: str, provider: str, voice: str, tts
         
     Returns:
         Tuple of (is_valid, tts_language, text_language)
-        - is_valid: True if languages match or if validation cannot be performed
-        - tts_language: The detected TTS language code
-        - text_language: The detected text language code
+        - is_valid: True if text is English, False if translation needed
+        - tts_language: The TTS language code (always 'en' for now)
+        - text_language: 'en' if English, 'other' if needs translation
     """
-    # Detect input text language
+    # Detect if text needs translation
     text_language = detect_text_language(text)
-    log_message("DEBUG", f"Language detection: text='{text[:30]}...', detected={text_language}")
     
     if not text_language:
-        log_message("DEBUG", "Language validation skipped: cannot detect text language")
-        return (True, '', '')
+        return (True, 'en', '')
     
-    # Try to get TTS language from voice lookup first
-    tts_language = get_voice_language_for_provider(provider, voice)
-    
-    # If voice lookup failed, try the config's language parameter
-    if not tts_language:
-        tts_language = tts_language_config
-    
-    # For Kokoro, the language setting uses short codes like 'a' (American), 'b' (British), etc.
-    # Map these to BCP-47 codes for comparison
-    if provider == 'kokoro' and tts_language:
-        kokoro_lang_map = {
-            'a': 'en-US',  # American English
-            'b': 'en-GB',  # British English
-            'j': 'ja-JP',  # Japanese
-            'z': 'zh-CN',  # Chinese
-            'e': 'es-ES',  # Spanish
-            'f': 'fr-FR',  # French
-            'h': 'hi-IN',  # Hindi
-            'i': 'it-IT',  # Italian
-            'p': 'pt-BR',  # Portuguese
-        }
-        if tts_language.lower() in kokoro_lang_map:
-            tts_language = kokoro_lang_map[tts_language.lower()]
-    
-    # If we still can't determine the TTS language, skip validation
-    if not tts_language:
-        log_message("DEBUG", f"Language validation skipped: cannot determine TTS language for {provider}")
-        return (True, '', text_language)
-    
-    # Compare primary languages (e.g., 'en' == 'en' for 'en-US' and 'en-GB')
-    tts_primary = get_primary_language(tts_language)
-    
-    is_valid = tts_primary == text_language
+    # Simple logic: if text is 'other' (non-English), needs translation
+    is_valid = text_language == 'en'
     if not is_valid:
-        log_message("DEBUG", f"Language mismatch: TTS={tts_language} vs Text={text_language}")
-    return (is_valid, tts_language, text_language)
+        log_message("INFO", f"Non-English content detected, translation needed")
+    return (is_valid, 'en', text_language)
 
 
 def translate_for_tts(text: str, tts_language: str = 'en') -> str:
@@ -894,7 +836,7 @@ def translate_for_tts(text: str, tts_language: str = 'en') -> str:
     base_url = base_url.strip().strip('"').strip("'")
     if '#' in base_url:
         base_url = base_url.split('#')[0].strip()
-    log_message("DEBUG", f"translate_for_tts: base_url={base_url}, model={model}")
+    log_message("INFO", f"translate_for_tts: base_url={base_url}, model={model}")
     
     if not api_key:
         log_message("INFO", "No LLM API key configured, skipping translation")
@@ -919,7 +861,7 @@ def translate_for_tts(text: str, tts_language: str = 'en') -> str:
     # Rule 3: Non-English text - translate to conversational English
     if text_lang == 'en':
         prompt = f"""Simplify the following text into natural, conversational workplace English.
-Keep it concise and easy to speak aloud. Remove jargon and technical complexity.
+Keep it concise and easy to speak aloud. Below 300 words. Remove jargon and technical complexity.
 Just output the simplified text, nothing else.
 
 Text:
@@ -935,6 +877,8 @@ Text:
         log_message("INFO", f"Translating {text_lang} text to English")
     
     try:
+        import json as json_module
+        
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
@@ -946,21 +890,83 @@ Text:
                 {"role": "user", "content": prompt}
             ],
             "max_tokens": 1000,
-            "temperature": 0.3
+            "temperature": 0.3,
+            "stream": True  # Enable streaming
         }
         
-        # Make API call
         url = f"{base_url.rstrip('/')}/chat/completions"
-        response = requests.post(url, headers=headers, json=payload, timeout=10)
         
-        if response.status_code == 200:
-            result = response.json()
-            translated = result["choices"][0]["message"]["content"].strip()
-            log_message("INFO", f"Translation success: '{text[:30]}...' -> '{translated[:50]}...'")
-            return translated
-        else:
+        # Use streaming request
+        response = requests.post(url, headers=headers, json=payload, timeout=30, stream=True)
+        
+        if response.status_code != 200:
             log_message("WARNING", f"Translation API error {response.status_code}: {response.text[:100]}")
             return text
+        
+        # Process streaming response
+        full_text = ""
+        buffer = ""
+        sentence_end_chars = {'.', '!', '?', '。', '！', '？'}
+        first_sentence_spoken = False
+        
+        for line in response.iter_lines():
+            if not line:
+                continue
+            
+            line_text = line.decode('utf-8')
+            if not line_text.startswith('data: '):
+                continue
+            
+            data_str = line_text[6:]  # Remove 'data: ' prefix
+            if data_str == '[DONE]':
+                break
+            
+            try:
+                chunk = json_module.loads(data_str)
+                delta = chunk.get('choices', [{}])[0].get('delta', {})
+                content = delta.get('content', '')
+                
+                if content:
+                    buffer += content
+                    full_text += content
+                    
+                    # Check if we have a complete sentence to speak immediately
+                    if any(c in content for c in sentence_end_chars):
+                        # Find the last sentence boundary
+                        last_end = -1
+                        for i, c in enumerate(buffer):
+                            if c in sentence_end_chars:
+                                last_end = i
+                        
+                        if last_end >= 0:
+                            sentence = buffer[:last_end + 1].strip()
+                            buffer = buffer[last_end + 1:]
+                            
+                            # Queue the sentence for immediate TTS
+                            if sentence and len(sentence) >= MIN_SPEAK_LENGTH:
+                                log_message("INFO", f"Streaming TTS: '{sentence[:40]}...'")
+                                # Queue directly to TTS without going through queue_for_speech
+                                # to avoid re-validation loops
+                                _queue_speech_item_direct(sentence)
+                                first_sentence_spoken = True
+                                
+            except json_module.JSONDecodeError:
+                continue
+        
+        # Speak any remaining text in buffer
+        if buffer.strip() and len(buffer.strip()) >= MIN_SPEAK_LENGTH:
+            log_message("INFO", f"Streaming TTS (final): '{buffer[:40]}...'")
+            _queue_speech_item_direct(buffer.strip())
+            first_sentence_spoken = True
+        
+        # If we spoke via streaming, return empty to prevent double-speaking
+        if first_sentence_spoken:
+            log_message("INFO", f"Streaming translation complete, {len(full_text)} chars translated")
+            return ""  # Return empty so caller doesn't queue again
+        
+        # Fallback: return full text if no streaming sentences were spoken
+        log_message("INFO", f"Translation success: '{text[:30]}...' -> '{full_text[:50]}...'")
+        return full_text.strip() if full_text else text
             
     except Exception as e:
         log_message("WARNING", f"Translation failed: {e}")
@@ -1835,7 +1841,7 @@ def _save_audio_to_cache(audio_bytes: bytes, ext: str, provider: str, voice: str
         log_message("WARNING", f"Failed to save audio cache: {e}")
         return None
 
-def synthesize_and_play(synthesize_func, text: str, use_process_control: bool = True, needs_skip: bool = False) -> bool:
+def synthesize_and_play(synthesize_func, text: str, use_process_control: bool = True, needs_skip: bool = False, pre_play_callback: Optional[Callable[[], None]] = None) -> bool:
     """Synthesize audio via provider function and play it."""
     try:
         result = synthesize_func(text)
@@ -1856,6 +1862,10 @@ def synthesize_and_play(synthesize_func, text: str, use_process_control: bool = 
         provider = config.get('provider', 'unknown')
         voice = config.get('voice', 'default')
         _save_audio_to_cache(audio_bytes, ext, provider, voice, text)
+
+        # Wait for previous playback if callback is provided
+        if pre_play_callback:
+            pre_play_callback()
 
         if needs_skip:
             # Capture old thread before signaling skip
@@ -1996,12 +2006,12 @@ class TTSProvider(ABC):
         
         return ", ".join(config_parts)
     
-    def speak(self, text: str, use_process_control: bool = True, needs_skip: bool = False) -> bool:
+    def speak(self, text: str, use_process_control: bool = True, needs_skip: bool = False, pre_play_callback: Optional[Callable[[], None]] = None) -> bool:
         """Synthesize and play audio, return True if successful."""
         config_summary = self.get_config_summary()
         text_preview = text[:100] + '...' if len(text) > 100 else text
         log_message("INFO", f"TTS_Synthesizing_with_{config_summary}: '{text_preview}'")
-        return synthesize_and_play(self.synthesize, text, use_process_control, needs_skip)
+        return synthesize_and_play(self.synthesize, text, use_process_control, needs_skip, pre_play_callback)
     
     def get_config_value(self, key: str, default: Any = None) -> Any:
         """Get config value from instance, shared state, or default."""
@@ -2116,33 +2126,38 @@ class GoogleCloudProvider(TTSProvider):
     def synthesize(self, text: str) -> Optional[Tuple[bytes, str]]:
         from google.cloud import texttospeech
 
-        try:
-            voice = self.get_config_value('voice', gcloud_voice)
-            language_code = self.get_config_value('language_code', gcloud_language_code)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                voice = self.get_config_value('voice', gcloud_voice)
+                language_code = self.get_config_value('language_code', gcloud_language_code)
 
-            client = texttospeech.TextToSpeechClient()
+                client = texttospeech.TextToSpeechClient()
 
-            synthesis_input = texttospeech.SynthesisInput(text=text)
+                synthesis_input = texttospeech.SynthesisInput(text=text)
 
-            voice_params = texttospeech.VoiceSelectionParams(
-                language_code=language_code,
-                name=voice
-            )
+                voice_params = texttospeech.VoiceSelectionParams(
+                    language_code=language_code,
+                    name=voice
+                )
 
-            audio_config = texttospeech.AudioConfig(
-                audio_encoding=texttospeech.AudioEncoding.MP3
-            )
+                audio_config = texttospeech.AudioConfig(
+                    audio_encoding=texttospeech.AudioEncoding.MP3
+                )
 
-            response = client.synthesize_speech(
-                input=synthesis_input,
-                voice=voice_params,
-                audio_config=audio_config
-            )
+                response = client.synthesize_speech(
+                    input=synthesis_input,
+                    voice=voice_params,
+                    audio_config=audio_config
+                )
 
-            return response.audio_content, ".mp3"
-        except Exception as e:
-            log_message("ERROR", f"Google TTS synthesis error: {e}")
-            return None
+                return response.audio_content, ".mp3"
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    log_message("ERROR", f"Google TTS synthesis error (final): {e}")
+                    return None
+                log_message("WARNING", f"Google TTS error (attempt {attempt+1}): {e} - Retrying in 1s...")
+                time.sleep(1.0)
 
 
 class ElevenLabsProvider(TTSProvider):
@@ -2951,7 +2966,7 @@ def is_similar_to_recent(text: str) -> bool:
     return False
 
 
-def speak_text(text: str, engine: str, needs_skip: bool = False) -> bool:
+def speak_text(text: str, engine: str, needs_skip: bool = False, pre_play_callback: Optional[Callable[[], None]] = None) -> bool:
     """Speak text using appropriate engine, return completion status."""
     if disable_tts:
         return True
@@ -2966,7 +2981,7 @@ def speak_text(text: str, engine: str, needs_skip: bool = False) -> bool:
     if current_provider != 'system':
         is_valid, tts_lang, text_lang = validate_tts_language_matches_text(
             text, current_provider, current_voice or '', current_language)
-        if not is_valid:
+        if not is_valid and current_provider != 'elevenlabs':
             # Instead of blocking, translate the text to match TTS language
             log_message("INFO", f"Text language ({text_lang}) doesn't match TTS language ({tts_lang}), attempting translation...")
             text = translate_for_tts(text, tts_lang)
@@ -2976,10 +2991,10 @@ def speak_text(text: str, engine: str, needs_skip: bool = False) -> bool:
     provider = create_tts_provider(current_provider)
     if provider:
         try:
-            result = provider.speak(text, use_process_control=True, needs_skip=needs_skip)
+            result = provider.speak(text, use_process_control=True, needs_skip=needs_skip, pre_play_callback=pre_play_callback)
             if result:
                 return True
-            log_message("WARNING", f"TTS provider '{current_provider}' returned no audio; falling back to system TTS")
+            log_message("WARNING", f"TTS provider '{current_provider}' returned unable to speak; falling back to system TTS")
         except Exception as e:
             log_message("ERROR", f"TTS provider {current_provider} failed: {e}")
             log_message("ERROR", f"Traceback: {traceback.format_exc()}")
@@ -3148,36 +3163,32 @@ def tts_worker(engine: str):
                         break
                 playback_control.reset_skip_flags()
                 continue
-                
-            # Wait while paused
-            while (playback_control.is_paused or _local_model_loading or tts_queue.empty()) and not shutdown_event.is_set():
+            
+            # Wait while paused or model is loading
+            if playback_control.is_paused or _local_model_loading:
                 time.sleep(0.1)
+                continue
+            
+            # Use blocking queue.get() with timeout for immediate response
+            # This replaces the polling loop for much lower latency
+            try:
+                item = tts_queue.get(timeout=0.05)  # 50ms timeout
+            except queue.Empty:
+                continue
 
-            text_to_speak = ""
-            speech_item: Optional[SpeechItem] = None
-            breakout = False
-            while not tts_queue.empty():
-                # Get next item from queue
-                item = tts_queue.get()
-
-                if item == "__SHUTDOWN__":
-                    breakout = True
-                    break
-
-                # Handle both old string format and new SpeechItem format
-                if isinstance(item, str):
-                    speech_item = SpeechItem(text=item, original_text=item)
-                else:
-                    speech_item = item
-
-                if speech_item:
-                    if text_to_speak:
-                        text_to_speak += ". "
-                    text_to_speak += speech_item.text
-            if breakout:
+            if item == "__SHUTDOWN__":
                 break
 
-            if speech_item is None:
+            # Handle both old string format and new SpeechItem format
+            if isinstance(item, str):
+                speech_item = SpeechItem(text=item, original_text=item)
+            else:
+                speech_item = item
+            
+            # Process immediately instead of batching
+            text_to_speak = speech_item.text if speech_item else ""
+
+            if speech_item is None or not text_to_speak.strip():
                 continue
 
             # Tell ASR to ignore input while we're speaking to prevent feedback
@@ -3189,48 +3200,21 @@ def tts_worker(engine: str):
             except Exception as e:
                 log_message("INFO", f"Could not set ASR ignore flag: {e}")
 
-            # Check for auto-skip before starting audio generation
+            # Define wait callback for pipeline processing
+            def wait_for_previous_playback():
+                # Ensure sequential playback: wait for previous item to finish
+                # unless an external interrupt (skip_current) is signaled.
+                while is_speaking() and not playback_control.skip_current and not shutdown_event.is_set():
+                    time.sleep(0.05)
+
+            # Check for external skip signal before starting updates
             needs_skip = False
-
-
-            log_message("INFO",
-                        f"Auto-skip check: {auto_skip_tts_enabled=} {_local_model_loading=} {tts_queue.empty()=}, current_speech_item={current_speech_item is not None}")
-
-            if auto_skip_tts_enabled and not _local_model_loading:
-                # Check if something is currently playing and how long it's been playing
-                is_currently_speaking = is_speaking()
-                is_currently_playing = playback_control.current_process is not None
-                playing_long_enough = False
-                time_playing = None
-                if is_currently_playing and current_speech_item and current_speech_item.start_time:
-                    time_playing = time.time() - current_speech_item.start_time
-                    playing_long_enough = time_playing >= 1.0  # Minimum 1 second
-                    log_message("INFO", f"Current item has been playing for {time_playing:.2f} seconds")
-
-                log_message("INFO", f"{is_currently_speaking=} {is_currently_playing=} {playing_long_enough=} {time_playing=}")
-
-                # Only skip current item if something is actually speaking, a process exists, and neither item is an exception
-                current_is_exception = bool(current_speech_item and current_speech_item.is_exception)
-
-                if current_is_exception:
-                    log_message("INFO", "Current speech item is an exception; skipping auto-skip")
-
-                if is_currently_speaking and is_currently_playing and not current_is_exception:
-                    needs_skip = True
-                    log_message("INFO", f"Auto-skipping current audio for new text ({len(text_to_speak)} chars)")
-
-                    # Add an interjection only if the current item has been playing long enough
-                    if playing_long_enough:
-                        interjection = random.choice(SKIP_INTERJECTIONS)
-                        # Prepend the interjection to the text for TTS only
-                        text_to_speak = f"{interjection}, {text_to_speak}"
-                        log_message("INFO", f"Added interjection '{interjection}' for smoother transition")
-                    else:
-                        log_message("INFO", "Skipping interjection - current item hasn't played long enough")
-                elif is_currently_playing:
-                    log_message("WARNING", "Process exists but not actually speaking - race condition detected!")
-                else:
-                    log_message("INFO", "Nothing currently playing - no auto-skip needed")
+            if playback_control.skip_current:
+                needs_skip = True
+                log_message("INFO", "External skip signal detected - interrupting current speech")
+            
+            # Legacy logging for debug
+            log_message("DEBUG", f"Processing item: '{text_to_speak[:30]}...' (needs_skip={needs_skip})")
 
             # Set current speech item with thread safety and record start time
             with _state_lock:
@@ -3245,7 +3229,8 @@ def tts_worker(engine: str):
                 else:
                     log_message("INFO", f"Speaking via {engine}: '{text_to_speak}'")
 
-                playback_started = speak_text(text_to_speak, engine, needs_skip)
+                # Pass wait_for_previous_playback callback to enable pipelining
+                playback_started = speak_text(text_to_speak, engine, needs_skip, pre_play_callback=wait_for_previous_playback)
                 if disable_tts:
                     playback_started = False  # Ensure cleanup runs when TTS disabled (no actual playback)
 
@@ -3329,6 +3314,38 @@ def _text_is_novel(new_text: str, old_text: str) -> bool:
         return True
 
 
+def _queue_speech_item_direct(text: str) -> None:
+    """Queue text directly to TTS without full validation chain.
+    
+    Used by streaming translation to immediately queue sentences.
+    Bypasses language validation since text is already translated.
+    """
+    global last_queued_text, last_queue_time, tts_queue
+    
+    if not text or len(text) < MIN_SPEAK_LENGTH:
+        return
+    
+    # Clean punctuation
+    text = clean_punctuation_sequences(text)
+    
+    if not text or len(text) < MIN_SPEAK_LENGTH or len(text) > MAX_SPEAK_LENGTH:
+        return
+    
+    speech_item = SpeechItem(
+        text=text,
+        original_text=text,
+        line_number=None,
+        source="translation",
+    )
+    
+    with _state_lock:
+        last_queued_text = text
+        last_queue_time = time.time()
+    
+    tts_queue.put(speech_item)
+    log_message("DEBUG", f"Direct queued for TTS: '{text[:40]}...'")
+
+
 def queue_for_speech(original_text: str, line_number: Optional[int] = None, source: str = "output", exception_match: bool = False, writes_partial_output: bool = False, callback: Optional[Callable[[str], None]] = None, constituent_parts: Optional[List[str]] = None) -> str:
     """Queue text for TTS with debouncing and filtering."""
     global highest_spoken_line_number, last_queued_text, last_queue_time, _delayed_timer, _delayed_speech_item
@@ -3363,7 +3380,7 @@ def queue_for_speech(original_text: str, line_number: Optional[int] = None, sour
             return ""
     elif active_profile.name == "mcp":
         speakable_text = original_text
-        log_message("DEBUG", f"MCP message received: '{original_text[:50]}...'")
+        log_message("INFO", f"MCP message received: '{original_text[:50]}...'")
         
         # Translate text if TTS language doesn't match text language
         config = get_tts_config()
@@ -3372,7 +3389,7 @@ def queue_for_speech(original_text: str, line_number: Optional[int] = None, sour
         if current_provider != 'system':
             is_valid, tts_lang, text_lang = validate_tts_language_matches_text(
                 speakable_text, current_provider, config.get('voice') or '', config.get('language'))
-            if not is_valid:
+            if not is_valid and current_provider != 'elevenlabs':
                 log_message("INFO", f"Translating {text_lang} text to {tts_lang}...")
                 original_before = speakable_text
                 speakable_text = translate_for_tts(speakable_text, tts_lang)
@@ -3385,12 +3402,12 @@ def queue_for_speech(original_text: str, line_number: Optional[int] = None, sour
         return ""
     
 
+    # Clean up any awkward punctuation sequences
+    speakable_text = clean_punctuation_sequences(speakable_text)
+
     if not speakable_text or len(speakable_text) < MIN_SPEAK_LENGTH or len(speakable_text) > MAX_SPEAK_LENGTH:
         log_message("INFO", f"Text too short or too long: '{len(speakable_text)}' -> '{speakable_text}'")
         return ""
-    
-    # Clean up any awkward punctuation sequences
-    speakable_text = clean_punctuation_sequences(speakable_text)
 
     # Get current time for various time-based checks
     current_time = time.time()

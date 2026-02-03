@@ -31,13 +31,15 @@ TalkiTo brings natural speech capabilities to AI development tools. Talk to Clau
 
 ## ✨ Key Features
 
-- **90% faster startup** - Launches in ~2 seconds with lazy-loading optimization
+- **Start-Instant TTS** - Blocking queue & immediate processing reduces initial latency to near zero
+- **Zero-Gap Pipeline** - Parallel synthesis allows gapless playback of sequential sentences
+- **Reliable Cloud TTS** - Smart retry logic handles transient network failures (e.g. 503 errors)
+- **Start Up Faster** - 90% faster startup (launches in ~2 seconds) with lazy-loading optimization
 - **Full context reading** - Reads complete agent responses from session history logs
 - **Smart TTS fallback** - Automatic fallback to Kokoro TTS ensures uninterrupted speech
 - **Audio caching** - Intelligent caching reduces latency and API costs
 - **TTS Translation** - Auto-translate non-English text to English for TTS (via LLM API)
 - **Multiple providers** - OpenAI, AWS Polly, Azure, Google Cloud, ElevenLabs, Deepgram, Kokoro, KittenTTS
-- **Per-agent voice config** - Different voices for different AI assistants
 - **MCP Server support** - Run as standalone Model Context Protocol server
 - **Global configuration** - Settings persist in `.env` or `.talkito.env` files
 
@@ -254,14 +256,18 @@ export LLM_MODEL="gpt-4o-mini"  # Optional
 
 ---
 
-## 🆕 What's New in v0.3.0
+## 🆕 What's New in v0.3.1
 
 ### Performance
+- **Start-Instant TTS** - Replaced polling with blocking queue for immediate processing
+- **Zero-Gap Pipeline** - Synthesizes next sentence while current is playing
 - **90% faster startup** - Reduced from 20+ seconds to ~2 seconds
 - **Lazy loading** - TTS/ASR providers load only when needed
 - **Audio caching** - Intelligent caching reduces API calls
 
 ### Reliability
+- **Smart Retry Logic** - Google TTS automatically retries on network failures (503, Socket Closed)
+- **Sequential Playback** - Fixed auto-skip issues to ensure sentences play in order without interruption
 - **Full context reading** - Reads complete agent responses from session history logs
 - **Smart TTS fallback** - Automatic fallback to Kokoro TTS
 - **Robust error handling** - Better recovery from provider failures
